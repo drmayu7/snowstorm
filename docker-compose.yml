@@ -61,8 +61,3 @@ networks:
 
 volumes:
   elastic:
-    # Set NFS volume in AWS
-    driver_opts:
-      type: "nfs"
-      o: "addr=${EFS_DNS},nfsvers=4,soft,rw"
-      device: ":/"
