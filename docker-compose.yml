@@ -63,6 +63,6 @@ volumes:
   elastic:
     # Set NFS volume in AWS
     driver_opts:
-      type:"nfs"
+      type: "nfs"
       o: "addr=fs-0e98d505c8221e90a.efs.ap-southeast-1.amazonaws.com,nfsvers=4,soft,rw"
       device: ":/"
