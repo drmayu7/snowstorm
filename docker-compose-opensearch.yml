@@ -1,4 +1,6 @@
 version: '2.1'
+
+services:
   snowstorm:
     image: snomedinternational/snowstorm:latest
     container_name: snowstorm
@@ -12,7 +14,7 @@ version: '2.1'
         aliases:
          - snowstorm
     ports:
-      - 8080:8080
+      - "8080:8080"
 
   browser:
     image: snomedinternational/snomedct-browser:latest
@@ -20,18 +22,17 @@ version: '2.1'
     depends_on:
       - snowstorm
     links:
-      - snowstorm:snowstorm
+      - "snowstorm:snowstorm"
     networks:
       - elastic
     environment:
       - API_HOST=http://snowstorm:8080/
     ports:
-      - 80:80
+      - "80:80"
     restart: always
 
-
 networks:
-  elastic:
+  elastic: {}
 
 volumes:
-  elastic:
+  elastic: {}
