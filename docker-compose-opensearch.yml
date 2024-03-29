@@ -5,9 +5,6 @@ services:
     image: snomedinternational/snowstorm:latest
     container_name: snowstorm
     restart: always
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
     entrypoint: java -Xms2g -Xmx4g --add-opens java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED -cp @/app/jib-classpath-file org.snomed.snowstorm.SnowstormApplication --elasticsearch.urls=https://vpc-snowstorm-nodes-poazw2yp4pwjablxyufwiqrwju.ap-southeast-1.es.amazonaws.com
     networks:
       elastic:
