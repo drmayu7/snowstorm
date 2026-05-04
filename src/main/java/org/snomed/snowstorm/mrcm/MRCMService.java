@@ -56,7 +56,7 @@ public class MRCMService {
 	private VersionControlHelper versionControlHelper;
 
 	@Autowired
-	private ElasticsearchOperations elasticsearchTemplate;
+	private ElasticsearchOperations elasticsearchOperations;
 
 	private final Logger logger = LoggerFactory.getLogger(getClass());
 
@@ -68,7 +68,7 @@ public class MRCMService {
 			String branchPath, List<LanguageDialect> languageDialects) throws ServiceException {
 
 		BranchCriteria branchCriteria = versionControlHelper.getBranchCriteria(branchPath);
-		final MRCM branchMRCM = mrcmLoader.loadActiveMRCM(branchPath, branchCriteria);
+		final MRCM branchMRCM = mrcmLoader.loadActiveMRCM(branchCriteria);
 
 		final List<AttributeDomain> attributeDomains = doRetrieveDomainAttributes(contentType, proximalPrimitiveModeling, parentIds, branchCriteria, branchMRCM);
 		Set<String> attributeIds = attributeDomains.stream().map(AttributeDomain::getReferencedComponentId).collect(Collectors.toSet());
@@ -91,7 +91,7 @@ public class MRCMService {
 			String branchPath, BranchCriteria branchCriteria) throws ServiceException {
 
 		// Load MRCM using active records applicable to this branch
-		final MRCM branchMRCM = mrcmLoader.loadActiveMRCM(branchPath, branchCriteria);
+		final MRCM branchMRCM = mrcmLoader.loadActiveMRCM(branchCriteria);
 		final List<AttributeDomain> attributeDomains = doRetrieveDomainAttributes(contentType, proximalPrimitiveModeling, parentIds, branchCriteria, branchMRCM);
 
 		Set<String> attributeIds = attributeDomains.stream().map(AttributeDomain::getReferencedComponentId).collect(Collectors.toSet());
@@ -165,7 +165,7 @@ public class MRCMService {
 
 	public Collection<ConceptMini> retrieveAttributeValues(ContentType contentType, String attributeId, String termPrefix, String branchPath, List<LanguageDialect> languageDialects) throws ServiceException {
 		BranchCriteria branchCriteria = versionControlHelper.getBranchCriteria(branchPath);
-		MRCM branchMRCM = mrcmLoader.loadActiveMRCM(branchPath, branchCriteria);
+		MRCM branchMRCM = mrcmLoader.loadActiveMRCM(branchCriteria);
 		return retrieveAttributeValues(contentType, attributeId, termPrefix, branchPath, languageDialects, branchMRCM);
 	}
 
@@ -202,7 +202,8 @@ public class MRCMService {
 		if (IdentifierService.isConceptId(termPrefix)) {
 			conceptQuery.conceptIds(Collections.singleton(termPrefix));
 		} else {
-			conceptQuery.descriptionCriteria(d -> d.term(termPrefix).active(true));
+			Set<String> languageCodes = languageDialects.stream().map(LanguageDialect::getLanguageCode).collect(Collectors.toSet());
+			conceptQuery.descriptionCriteria(d -> d.term(termPrefix).active(true).searchLanguageCodes(languageCodes));
 		}
 		return conceptQuery;
 	}
@@ -231,9 +232,9 @@ public class MRCMService {
 						.must(termQuery(QueryConcept.Fields.STATED, false))
 						.filter(termsQuery(QueryConcept.Fields.CONCEPT_ID, remainingAttributes)))
 				)
-				.withSourceFilter(new FetchSourceFilter(new String[]{QueryConcept.Fields.CONCEPT_ID, QueryConcept.Fields.PARENTS}, null))
+				.withSourceFilter(new FetchSourceFilter(true, new String[]{QueryConcept.Fields.CONCEPT_ID, QueryConcept.Fields.PARENTS}, null))
 				.withPageable(LARGE_PAGE);
-		try (SearchHitsIterator<QueryConcept> queryConcepts = elasticsearchTemplate.searchForStream(queryConceptQuery.build(), QueryConcept.class)) {
+		try (SearchHitsIterator<QueryConcept> queryConcepts = elasticsearchOperations.searchForStream(queryConceptQuery.build(), QueryConcept.class)) {
 			queryConcepts.forEachRemaining(hit -> {
 				for (Long parent : hit.getContent().getParents()) {
 					ConceptMini parentMini = attributeMap.get(parent);

@@ -1,19 +1,21 @@
 package org.snomed.snowstorm.fhir.services;
 
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
-import co.elastic.clients.elasticsearch._types.query_dsl.PrefixQuery;
+import co.elastic.clients.elasticsearch._types.query_dsl.Operator;
 import com.google.common.base.Strings;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
-
+import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.hl7.fhir.r4.model.*;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.snomed.snowstorm.core.data.domain.ConceptMini;
+import org.snomed.snowstorm.core.data.domain.Concepts;
 import org.snomed.snowstorm.core.data.domain.QueryConcept;
 import org.snomed.snowstorm.core.data.domain.ReferenceSetMember;
 import org.snomed.snowstorm.core.data.services.ConceptService;
+import org.snomed.snowstorm.core.data.services.DescriptionService;
 import org.snomed.snowstorm.core.data.services.QueryService;
 import org.snomed.snowstorm.core.data.services.ReferenceSetMemberService;
 import org.snomed.snowstorm.core.data.services.pojo.MemberSearchRequest;
@@ -29,10 +31,11 @@ import org.snomed.snowstorm.rest.ControllerHelper;
 import org.snomed.snowstorm.rest.pojo.SearchAfterPageRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.*;
-import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
-import org.springframework.data.elasticsearch.core.SearchHits;
 import org.springframework.data.elasticsearch.client.elc.NativeQuery;
 import org.springframework.data.elasticsearch.client.elc.NativeQueryBuilder;
+import org.springframework.data.elasticsearch.client.elc.Queries;
+import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
+import org.springframework.data.elasticsearch.core.SearchHits;
 import org.springframework.stereotype.Service;
 
 import java.net.URLDecoder;
@@ -40,11 +43,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders.bool;
 import static io.kaicode.elasticvc.api.ComponentService.LARGE_PAGE;
+import static io.kaicode.elasticvc.helper.QueryHelper.termQuery;
+import static io.kaicode.elasticvc.helper.QueryHelper.termsQuery;
 import static java.lang.Boolean.TRUE;
 import static java.lang.String.format;
-import static co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders.*;
-import static io.kaicode.elasticvc.helper.QueryHelper.*;
 import static org.snomed.snowstorm.core.data.services.ReferenceSetMemberService.AGGREGATION_MEMBER_COUNTS_BY_REFERENCE_SET;
 import static org.snomed.snowstorm.core.util.CollectionUtils.orEmpty;
 import static org.snomed.snowstorm.fhir.services.FHIRHelper.*;
@@ -57,6 +61,8 @@ public class FHIRValueSetService {
 	public static final String REFSETS_WITH_MEMBERS = "Refsets";
 
 	private static final PageRequest PAGE_OF_ONE = PageRequest.of(0, 1);
+
+	private static List<Long> defaultSearchDescTypeIds = List.of(Concepts.FSN_L, Concepts.SYNONYM_L);
 
 	@Autowired
 	private FHIRCodeSystemService codeSystemService;
@@ -77,7 +83,7 @@ public class FHIRValueSetService {
 	private ConceptService snomedConceptService;
 
 	@Autowired
-	private ElasticsearchOperations elasticsearchTemplate;
+	private ElasticsearchOperations elasticsearchOperations;
 
 	private final Map<String, Set<String>> codeSystemVersionToRefsetsWithMembersCache = new HashMap<>();
 
@@ -88,7 +94,7 @@ public class FHIRValueSetService {
 				.withPageable(pageable)
 				.build();
 		searchQuery.setTrackTotalHits(true);
-		SearchHits<FHIRValueSet> search = elasticsearchTemplate.search(searchQuery, FHIRValueSet.class);
+		SearchHits<FHIRValueSet> search = elasticsearchOperations.search(searchQuery, FHIRValueSet.class);
 		return toPage(search, pageable);
 	}
 
@@ -279,7 +285,7 @@ public class FHIRValueSetService {
 			// FHIR Concept Expansion (non-SNOMED)
 			String sortField = filter != null ? "displayLen" : "code";
 			pageRequest = PageRequest.of(pageRequest.getPageNumber(), pageRequest.getPageSize(), Sort.Direction.ASC, sortField);
-			BoolQuery.Builder fhirConceptQuery = getFhirConceptQuery(codeSelectionCriteria, filter);
+			BoolQuery fhirConceptQuery = getFhirConceptQuery(codeSelectionCriteria, filter).build();
 
 			int offsetRequested = (int) pageRequest.getOffset();
 			int limitRequested = (int) (pageRequest.getOffset() + pageRequest.getPageSize());
@@ -314,14 +320,16 @@ public class FHIRValueSetService {
 					conceptsToLoad = new ArrayList<>();
 				}
 				if (!conceptsToLoad.isEmpty()) {
-					fhirConceptQuery.must(termsQuery(FHIRConcept.Fields.CODE, conceptsToLoad));
-					conceptsPage = conceptService.findConcepts(fhirConceptQuery, LARGE_PAGE);
+					BoolQuery.Builder conceptsToLoadQuery = bool()
+							.must(fhirConceptQuery._toQuery())
+							.must(termsQuery(FHIRConcept.Fields.CODE, conceptsToLoad));
+					conceptsPage = conceptService.findConcepts(conceptsToLoadQuery, LARGE_PAGE);
 					conceptsPage = new PageImpl<>(conceptsPage.getContent(), pageRequest, totalResults);
 				} else {
 					conceptsPage = new PageImpl<>(new ArrayList<>(), pageRequest, totalResults);
 				}
 			} else {
-				conceptsPage = conceptService.findConcepts(fhirConceptQuery, pageRequest);
+				conceptsPage = conceptService.findConcepts(bool().must(fhirConceptQuery._toQuery()), pageRequest);
 			}
 		}
 
@@ -387,7 +395,10 @@ public class FHIRValueSetService {
 		BoolQuery.Builder masterQuery = bool();
 		masterQuery.must(contentQuery.build()._toQuery());
 		if (termFilter != null) {
-			masterQuery.must(PrefixQuery.of(pq -> pq.field(FHIRConcept.Fields.DISPLAY).value(termFilter.toLowerCase()))._toQuery());
+			List<String> elasticAnalyzedWords = DescriptionService.analyze(termFilter, new StandardAnalyzer());
+			String searchTerm = DescriptionService.constructSearchTerm(elasticAnalyzedWords);
+			String query = DescriptionService.constructSimpleQueryString(searchTerm);
+			masterQuery.filter(Queries.queryStringQuery(FHIRConcept.Fields.DISPLAY, query, Operator.And, 2.0f)._toQuery());
 		}
 		return masterQuery;
 	}
@@ -502,7 +513,8 @@ public class FHIRValueSetService {
 		}
 		if (filter != null) {
 			conceptQuery.descriptionCriteria(descriptionCriteria -> {
-				descriptionCriteria.term(filter);
+				descriptionCriteria.term(filter)
+									.type(defaultSearchDescTypeIds);
 				if (!orEmpty(languageDialects).isEmpty()) {
 					descriptionCriteria.searchLanguageCodes(languageDialects.stream().map(LanguageDialect::getLanguageCode).collect(Collectors.toSet()));
 				}

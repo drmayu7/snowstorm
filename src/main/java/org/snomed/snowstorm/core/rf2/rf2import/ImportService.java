@@ -30,12 +30,11 @@ import java.util.*;
 import java.util.concurrent.ExecutorService;
 
 import static org.snomed.snowstorm.core.data.services.BranchMetadataHelper.*;
+import static org.snomed.snowstorm.core.data.services.BranchMetadataKeys.IMPORT_TYPE;
 import static org.snomed.snowstorm.core.rf2.RF2Type.FULL;
 
 @Service
 public class ImportService {
-
-	public static final String IMPORT_TYPE_KEY = "importType";
 
 	public static final String BATCH_CHANGE_KEY = "batch-change";
 
@@ -66,6 +65,9 @@ public class ImportService {
 
 	@Autowired
 	private ConceptService conceptService;
+
+	@Autowired
+	private MostRecentEffectiveTimeFinder mostRecentEffectiveTimeFinder;
 
 	private final Logger logger = LoggerFactory.getLogger(getClass());
 
@@ -187,7 +189,7 @@ public class ImportService {
 		Branch branch = branchService.findLatest(branchPath);
 		Metadata metadata = branch.getMetadata();
 		final Map<String, String> internalMetadataMap = metadata.getMapOrCreate(INTERNAL_METADATA_KEY);
-		internalMetadataMap.put(IMPORT_TYPE_KEY, importType.getName());
+		internalMetadataMap.put(IMPORT_TYPE, importType.getName());
 		if (importType == FULL || createCodeSystemVersion) {
 			internalMetadataMap.put(IMPORTING_CODE_SYSTEM_VERSION, "true");
 		}
@@ -205,7 +207,7 @@ public class ImportService {
 	private void clearImportMetadata(String branchPath) {
 		Metadata metadata = branchService.findLatest(branchPath).getMetadata();
 		final Map<String, String> internalMetadataMap = metadata.getMapOrCreate(INTERNAL_METADATA_KEY);
-		internalMetadataMap.remove(IMPORT_TYPE_KEY);
+		internalMetadataMap.remove(IMPORT_TYPE);
 		internalMetadataMap.remove(IMPORTING_CODE_SYSTEM_VERSION);
 		branchService.updateMetadata(branchPath, metadata);
 	}
@@ -227,10 +229,17 @@ public class ImportService {
 			final ReleaseImporter releaseImporter, final LoadingProfile loadingProfile) throws ReleaseImportException {
 
 		// If we are not creating a new version copy the release fields from the existing components
-		final ImportComponentFactoryImpl importComponentFactory =
-				getImportComponentFactory(branchPath, patchReleaseVersion, !job.isCreateCodeSystemVersion(), job.isClearEffectiveTimes());
+		final ImportComponentFactoryImpl importComponentFactory = getImportComponentFactory(branchPath, patchReleaseVersion, !job.isCreateCodeSystemVersion(), job.isClearEffectiveTimes());
+		importComponentFactory.useModuleEffectiveTimeFilter(true);
 		try {
-			releaseImporter.loadSnapshotReleaseFiles(releaseFileStream, loadingProfile, importComponentFactory, true);
+			logger.info("Start fetching latest effectiveTime imported already for each module on path {}", branchPath);
+			Map<String, Integer> effectiveTimeByModuleId = mostRecentEffectiveTimeFinder.getEffectiveTimeByModuleId(branchPath, true);
+			if (!effectiveTimeByModuleId.isEmpty()) {
+				logger.info("Fetched latest effectiveTime by module on path {} {}", branchPath, effectiveTimeByModuleId);
+			}
+			logger.info("Completed fetching latest effectiveTime for each module on path {}", branchPath);
+
+			releaseImporter.loadSnapshotReleaseFiles(releaseFileStream, loadingProfile.withModuleEffectiveTimeFilter(effectiveTimeByModuleId), importComponentFactory, true);
 			return importComponentFactory.getMaxEffectiveTime();
 		} catch (ReleaseImportException e) {
 			rollbackIncompleteCommit(importComponentFactory);

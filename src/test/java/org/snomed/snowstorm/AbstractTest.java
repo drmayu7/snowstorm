@@ -1,6 +1,7 @@
 package org.snomed.snowstorm;
 
 import co.elastic.clients.elasticsearch._types.query_dsl.MatchAllQuery;
+import co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectWriter;
@@ -13,13 +14,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.snomed.snowstorm.core.data.domain.Concept;
 import org.snomed.snowstorm.core.data.domain.QueryConcept;
 import org.snomed.snowstorm.core.data.domain.ReferenceSetMember;
-import org.snomed.snowstorm.core.data.services.CodeSystemService;
-import org.snomed.snowstorm.core.data.services.ConceptService;
-import org.snomed.snowstorm.core.data.services.PermissionService;
-import org.snomed.snowstorm.core.data.services.ReferenceSetMemberService;
+import org.snomed.snowstorm.core.data.services.*;
 import org.snomed.snowstorm.core.data.services.classification.ClassificationService;
 import org.snomed.snowstorm.core.data.services.servicehook.CommitServiceHookClient;
 import org.snomed.snowstorm.core.data.services.traceability.Activity;
+import org.snomed.snowstorm.ecl.ReferencedConceptsLookupService;
 import org.snomed.snowstorm.rest.View;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -28,6 +27,8 @@ import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.data.elasticsearch.client.elc.NativeQuery;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.data.elasticsearch.client.elc.NativeQueryBuilder;
+import org.springframework.data.elasticsearch.core.query.DeleteQuery;
+import org.springframework.data.elasticsearch.core.query.Query;
 import org.springframework.jms.annotation.JmsListener;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -67,6 +68,9 @@ public abstract class AbstractTest {
 	@Autowired
 	private ReferenceSetMemberService referenceSetMemberService;
 
+	@Autowired
+	private IdentifierComponentService identifierComponentService;
+
 	@MockBean
 	protected CommitServiceHookClient commitServiceHookClient; // Mocked as calls on external service.
 
@@ -75,6 +79,9 @@ public abstract class AbstractTest {
 
 	@Autowired
 	private ElasticsearchOperations elasticsearchOperations;
+
+	@Autowired
+	private ReferencedConceptsLookupService referencedConceptsLookupService;
 
 	@Value("${ims-security.roles.enabled}")
 	private boolean rolesEnabled;
@@ -103,6 +110,8 @@ public abstract class AbstractTest {
 			codeSystemService.deleteAll();
 			classificationService.deleteAll();
 			permissionService.deleteAll();
+			identifierComponentService.deleteAll();
+			referencedConceptsLookupService.deleteAll();
 		} catch (OptimisticLockingFailureException e) {
 			// Try again
 			Thread.sleep(100);
@@ -169,8 +178,16 @@ public abstract class AbstractTest {
 	}
 
 	protected void deleteAllQueryConceptsAndRefresh() {
-		NativeQuery deleteQuery = new NativeQueryBuilder().withQuery(new MatchAllQuery.Builder().build()._toQuery()).build();
+		Query query = new NativeQueryBuilder().withQuery(new MatchAllQuery.Builder().build()._toQuery()).build();
+		DeleteQuery deleteQuery = DeleteQuery.builder(query).build();
 		elasticsearchOperations.delete(deleteQuery, QueryConcept.class, elasticsearchOperations.getIndexCoordinatesFor(QueryConcept.class));
 		elasticsearchOperations.indexOps(QueryConcept.class).refresh();
 	}
+
+	protected void simulateElasticsearchException() {
+		// Create match query on effectiveTimeI to simulate exception
+		NativeQuery query = new NativeQueryBuilder().withQuery(QueryBuilders.match(q -> q.field("effectiveTimeI").query("2024-09-01"))).build();
+		elasticsearchOperations.search(query, Concept.class);
+	}
+
 }

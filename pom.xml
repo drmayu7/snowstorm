@@ -6,20 +6,22 @@
 	<description>SNOMED CT Terminology Server Using Elasticsearch</description>
 
 	<artifactId>snowstorm</artifactId>
-	<version>10.1.0</version>
+	<version>10.11.2</version>
 	<parent>
 		<groupId>org.snomed</groupId>
 		<artifactId>snomed-parent-bom</artifactId>
-		<version>3.1.0</version>
+		<version>3.13.0</version>
 	</parent>
 
 	<properties>
 		<packageName>${project.artifactId}</packageName>
+
+		<commons-io.version>2.21.0</commons-io.version>
+
 		<!--
-		Current Elasticsearch _Server_ version is 8.7.1
+		Current Elasticsearch _Server_ version is 8.11.1
 		N.B. Remember to keep TestConfig.ELASTIC_SEARCH_SERVER_VERSION and getting-started guide updated.
 		-->
-
 		<docker.registry>docker.io</docker.registry>
 		<docker.allowInsecureRegistries>false</docker.allowInsecureRegistries>
 		<docker.image.prefix>snomedinternational</docker.image.prefix>
@@ -28,6 +30,21 @@
 	</properties>
 
 	<dependencies>
+		<dependency>
+			<groupId>org.apache.jena</groupId>
+			<artifactId>jena-core</artifactId>
+			<exclusions>
+				<exclusion>
+					<groupId>org.apache.commons</groupId>
+					<artifactId>commons-compress</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.jena</groupId>
+			<artifactId>jena-arq</artifactId>
+		</dependency>
+
 		<dependency>
 			<!-- Branching and Version Control on top of Elasticsearch -->
 			<groupId>io.kaicode</groupId>
@@ -134,6 +151,12 @@
 		<dependency>
 			<groupId>org.ihtsdo.drools</groupId>
 			<artifactId>snomed-drools-engine</artifactId>
+			<exclusions>
+				<exclusion>
+					<groupId>org.testcontainers</groupId>
+					<artifactId>junit-jupiter</artifactId>
+				</exclusion>
+			</exclusions>
 		</dependency>
 		<dependency>
 			<groupId>com.fasterxml.jackson.dataformat</groupId>
@@ -152,19 +175,25 @@
 			<artifactId>modelmapper</artifactId>
 		</dependency>
 		<dependency>
-			<groupId>org.snomed.fhir</groupId>
+			<groupId>ca.uhn.hapi.fhir</groupId>
 			<artifactId>hapi-fhir-structures-r4</artifactId>
 		</dependency>
 		<dependency>
-			<groupId>org.snomed.fhir</groupId>
+			<groupId>ca.uhn.hapi.fhir</groupId>
 			<artifactId>hapi-fhir-server</artifactId>
+			<exclusions>
+				<exclusion>
+					<groupId>org.eclipse.angus</groupId>
+					<artifactId>angus-mail</artifactId>
+				</exclusion>
+			</exclusions>
 		</dependency>
 		<dependency>
-			<groupId>org.snomed.fhir</groupId>
+			<groupId>ca.uhn.hapi.fhir</groupId>
 			<artifactId>hapi-fhir-jpaserver-base</artifactId>
 			<exclusions>
 				<exclusion>
-					<groupId>org.snomed.fhir</groupId>
+					<groupId>ca.uhn.hapi.fhir</groupId>
 					<artifactId>hapi-fhir-sql-migrate</artifactId>
 				</exclusion>
 				<exclusion>
@@ -196,10 +225,14 @@
 					<groupId>org.springdoc</groupId>
 					<artifactId>springdoc-openapi-ui</artifactId>
 				</exclusion>
+				<exclusion>
+					<groupId>org.xerial</groupId>
+					<artifactId>sqlite-jdbc</artifactId>
+				</exclusion>
 			</exclusions>
 		</dependency>
 		<dependency>
-			<groupId>org.snomed.fhir</groupId>
+			<groupId>ca.uhn.hapi.fhir</groupId>
 			<artifactId>hapi-fhir-jpaserver-model</artifactId>
 			<exclusions>
 				<exclusion>
@@ -207,11 +240,6 @@
 					<artifactId>*</artifactId>
 				</exclusion>
 			</exclusions>
-		</dependency>
-		<dependency>
-			<groupId>commons-io</groupId>
-			<artifactId>commons-io</artifactId>
-			<version>2.14.0</version>
 		</dependency>
 		<dependency>
 			<groupId>org.apache.lucene</groupId>
@@ -278,17 +306,12 @@
 		</dependency>
 		<dependency>
 			<groupId>org.testcontainers</groupId>
-			<artifactId>testcontainers</artifactId>
+			<artifactId>testcontainers-elasticsearch</artifactId>
 			<scope>test</scope>
 		</dependency>
 		<dependency>
 			<groupId>org.testcontainers</groupId>
-			<artifactId>elasticsearch</artifactId>
-			<scope>test</scope>
-		</dependency>
-		<dependency>
-			<groupId>org.testcontainers</groupId>
-			<artifactId>junit-jupiter</artifactId>
+			<artifactId>testcontainers-junit-jupiter</artifactId>
 			<scope>test</scope>
 		</dependency>
 

@@ -17,6 +17,7 @@ import org.snomed.snowstorm.core.data.services.pojo.PageWithBucketAggregations;
 import org.snomed.snowstorm.core.data.services.pojo.PageWithBucketAggregationsFactory;
 import org.snomed.snowstorm.ecl.ECLQueryService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -37,7 +38,6 @@ import java.util.stream.Collectors;
 import static io.kaicode.elasticvc.api.ComponentService.LARGE_PAGE;
 import static co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders.*;
 import static io.kaicode.elasticvc.helper.QueryHelper.*;
-import static org.snomed.snowstorm.config.Config.AGGREGATION_SEARCH_SIZE;
 
 @Service
 /*
@@ -61,7 +61,10 @@ public class MultiSearchService implements CommitListener {
 	private VersionControlHelper versionControlHelper;
 
 	@Autowired
-	private ElasticsearchOperations elasticsearchTemplate;
+	private ElasticsearchOperations elasticsearchOperations;
+
+	@Value("${search.refset.aggregation.size}")
+	private int refsetAggregationSearchSize;
 	
 	private final Logger logger = LoggerFactory.getLogger(getClass());
 	
@@ -118,13 +121,13 @@ public class MultiSearchService implements CommitListener {
 			conceptIds.add(Long.parseLong(desc.getContent().getConceptId()));
 		}
 		// Fetch concept refset membership aggregation
-		SearchHits<ReferenceSetMember> membershipResults = elasticsearchTemplate.search(new NativeQueryBuilder()
+		SearchHits<ReferenceSetMember> membershipResults = elasticsearchOperations.search(new NativeQueryBuilder()
 						.withQuery(bool(b -> b
 								.must(termQuery(ReferenceSetMember.Fields.ACTIVE, true))
 								.filter(termsQuery(ReferenceSetMember.Fields.REFERENCED_COMPONENT_ID, conceptIds)))
 						)
 						.withPageable(PageRequest.of(0, 1))
-						.withAggregation("membership", AggregationBuilders.terms().field(ReferenceSetMember.Fields.REFSET_ID).size(AGGREGATION_SEARCH_SIZE).build()._toAggregation())
+						.withAggregation("membership", AggregationBuilders.terms().field(ReferenceSetMember.Fields.REFSET_ID).size(refsetAggregationSearchSize).build()._toAggregation())
 						.build(), ReferenceSetMember.class);
 		return PageWithBucketAggregationsFactory.createPage(searchHits, membershipResults.getAggregations(), pageRequest);
 	}
@@ -168,16 +171,16 @@ public class MultiSearchService implements CommitListener {
 		query.setTrackTotalHits(true);
 		DescriptionService.addTermSort(query);
 
-		return elasticsearchTemplate.search(query, Description.class);
+		return elasticsearchOperations.search(query, Description.class);
 	}
 
 
 	private Set<Long> getMatchedConcepts(Boolean conceptActiveFlag, Query branchesQuery, Query descriptionQuery) {
 		// return description and concept ids
 		Set<Long> conceptIdsMatched = new LongOpenHashSet();
-		try (final SearchHitsIterator<Description> descriptions = elasticsearchTemplate.searchForStream(new NativeQueryBuilder()
+		try (final SearchHitsIterator<Description> descriptions = elasticsearchOperations.searchForStream(new NativeQueryBuilder()
 				.withQuery(descriptionQuery)
-				.withSourceFilter(new FetchSourceFilter(new String[]{Description.Fields.CONCEPT_ID}, null))
+				.withSourceFilter(new FetchSourceFilter(true, new String[]{Description.Fields.CONCEPT_ID}, null))
 				.withPageable(LARGE_PAGE).build(), Description.class)) {
 			while (descriptions.hasNext()) {
 				conceptIdsMatched.add(Long.valueOf(descriptions.next().getContent().getConceptId()));
@@ -186,13 +189,13 @@ public class MultiSearchService implements CommitListener {
 		// filter description ids based on concept query results using active flag
 		Set<Long> result = new LongOpenHashSet();
 		if (!conceptIdsMatched.isEmpty()) {
-			try (final SearchHitsIterator<Concept> concepts = elasticsearchTemplate.searchForStream(new NativeQueryBuilder()
+			try (final SearchHitsIterator<Concept> concepts = elasticsearchOperations.searchForStream(new NativeQueryBuilder()
 					.withQuery(bool(b -> b
 							.must(branchesQuery)
 							.must(termsQuery(Concept.Fields.CONCEPT_ID, conceptIdsMatched)))
 					)
 					.withFilter(bool(b ->b.must(termQuery(Concept.Fields.ACTIVE, conceptActiveFlag))))
-					.withSourceFilter(new FetchSourceFilter(new String[]{Concept.Fields.CONCEPT_ID}, null))
+					.withSourceFilter(new FetchSourceFilter(true, new String[]{Concept.Fields.CONCEPT_ID}, null))
 					.withPageable(LARGE_PAGE).build(), Concept.class)) {
 				while (concepts.hasNext()) {
 					result.add(Long.valueOf(concepts.next().getContent().getConceptId()));
@@ -286,7 +289,7 @@ public class MultiSearchService implements CommitListener {
 				.withQuery(conceptQuery.build()._toQuery())
 				.withPageable(pageRequest)
 				.build();
-		SearchHits<Concept> searchHits = elasticsearchTemplate.search(query, Concept.class);
+		SearchHits<Concept> searchHits = elasticsearchOperations.search(query, Concept.class);
 		//Populate the published version path back in
 		List<Concept> concepts = searchHits.get()
 				.map(SearchHit::getContent)

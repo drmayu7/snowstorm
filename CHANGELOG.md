@@ -3,6 +3,209 @@ All notable changes to this project will be documented in this file.
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 10.11.1 Release (February 2026)
+Maintenance release with bug fixes and general improvements.
+
+### Improvements
+
+- PIP-846 Address CVE-2025-6965
+- PIP-908 Address CVE-2025-41249
+- PIP-912 Address CVE-2024-52981
+- PIP-657 Add RBAC logging
+- MAINT-3010 Add fr-fr dialect alias configuration
+
+### Fixes
+
+- ISTO-143 Fix ancestor ECL bug
+- MAINT-2769 Fix description inactivation indicator being lost during conflict merge
+- MAINT-2981 Correct FR & DE module configuration
+- MAINT-2998 Upgrade Testcontainers for Docker compatibility
+- MAINT-2973 Improve handling of parents during automatic Descriptor ReferenceSetMembers creation
+- MAINT-3006 Improve error logs when encountering "connection lost" exceptions
+- BROWSE-673 Fix inactive Concepts appearing in active Concept filtering
+
+## 10.10.1 Release (December 2025)
+Maintenance release with bug fixes and general improvements.
+
+This release added support for multiple code system dependencies. See [multiple code system dependencies](docs/multiple-code-system-dependencies.md).
+
+### Features
+- MAINT-2089 Add ability to read content from multiple CodeSystems
+- MAINT-2171 Add endpoints to support management of multiple CodeSystems
+- MAINT-2173 Add endpoint for viewing MDRS in human-readable format
+- BROWSE-809 Add read-only access
+
+### Improvements
+- MAINT-2976 Use branchPath to update MDRS target effective time during CodeSystem upgrade
+- MAINT-2977 Use parent CodeSystem branch instead when MDRS entries exist on extension branches
+- MAINT-2978 Always update MDRS target effective time, even when content automations are disabled
+- MAINT-2657 Include MDRS entries when exporting for classification
+- PIP-836 Address CVE-2025-27533
+- PIP-856 Address CVE-2025-50151
+- PIP-864 Address CVE-2025-7962
+- MAINT-2512 Add tests for reading from multiple CodeSystems
+- MAINT-2174 Update branch metadata to reflect MDRS changes
+- MAINT-2513 Add tests for importing with multiple CodeSystems
+- MAINT-2175 Improve upgrade process to prevent incompatibility issues with multiple CodeSystems
+- MAINT-2177 Update MDRS when upgrading CodeSystem
+- MAINT-2176 Add tests for integrity report with multiple CodeSystems
+- MAINT-2954 Remove redundant sorting in SBranchService
+- MAINT-2964 Limit scope in AdditionalDependencyUpdateService to prevent versioning issues
+- MAINT-2961 Add tests for rebasing with multiple CodeSystems
+
+### Fixes
+- INFRA-16025 Fix Chile and Jamaica FHIR config
+- MAINT-2953 Fix caching issue when parent branch's status changes
+
+## 10.9.1 Release (July 2025)
+Maintenance release with bug fixes and general improvements.
+
+### Features
+- MAINT-2930 Implement the branch save listener
+
+## 10.9.0 Release (July 2025)
+Maintenance release with bug fixes and general improvements.
+
+### Features
+- MAINT-2845 Send Branch changes to queue
+- RAP-160 Automatically download from S3 bucket to start importing CodeSystem version
+- MAINT-2739 Disable creation of CNC Inactivation Indicators per branch
+
+### Improvements
+- VAL-485 Include inferred Relationships when validating Concept
+- MAINT-2821 Add LOINC, NUVA and NPU CodeSystem configuration
+- MAINT-2901 Improve pagination logic when saving large classification results
+- PIP-854 Add Chile and Jamaica to CodeSystem configuration
+
+### Fixes
+- RAP-33 Rename ReferenceSet `AssociationReference` to `Association`
+- MAINT-2024 Allow export with null `ReferenceSetMember.moduleId` field
+- MAINT-2827 Allow import to complete when running locally
+- MAINT-2865 Remove hardcoded limit size for `memberOf` ECL query
+- MAINT-2870 Improve `memberOf` ECL query to not require `ReferencedConceptsLookup`
+- MAINT-2853 Fix logging level when updating MDRS
+- MAINT-2908 Fix the result window is too large issue when building concepts lookup during delta import
+
+## 10.8.2 Release (May 2025)
+Maintenance release with bug fixes and general improvements.
+
+### Features
+[ECL member of query performance enhancement](docs/ecl-memberOf-query-performance-enhancement.md)
+- PIP-677 Add new index for reference set concept id lookup (concepts-lookup)
+- PIP-680 Improve performance of "member of" ECL query
+- PIP-681 Add admin function to rebuild and clear concepts-lookup
+- PIP-679 Add to "concepts-lookup" during import
+- PIP-678 Add to "concepts-lookup" during authoring
+- PIP-700 Add configuration to optionally use "concepts-lookup" index during ECL queries
+- PIP-710 Improve performance of compound ECL "member of" query
+- PIP-772 Handle duplicate refset member inactivation when building/promoting concept lookups during authoring
+- PIP-773 Improve ECL refinement expression with member of query
+
+### Improvements
+- MAINT-2628 Update Accept-Language header parser for language with regional dialect
+- ISTO-130 Add CZ to default configuration
+- PIP-662 Address CVE-2024-43709
+- MAINT-2793 Use expectedExtensionModules when donating Concept
+- PIP-730 Update ECL "member of" query with dot notation to use concepts-lookup
+- MAINT-2545 Remove current MDRS automation
+- MAINT-2543 Update MDRS when starting new authoring cycle 
+- MAINT-2542 Update MDRS when versioning
+- MAINT-2544 Update MDRS when upgrading
+- MAINT-2686 Stop ability to create Descriptions with capitalized language  codes
+- PIP-770 Address CVE-2025-31651
+
+### Fixes
+- ISTO-129 Suppress not found error when querying unknown resource in FHIR
+- MAINT-2732 Prevent error during startup when CodeSystemVersion has no underlying Branch
+- MAINT-2788 Stop published Annotations losing "released" and "effectiveTime" properties during rebase
+- MAINT-2801 Fix en-gb import by specifying dependant CodeSystem
+- MAINT-2761 Stop publishes Annotations being deleted
+- 
+## 10.7.0 Release (January 2025)
+Maintenance release with bug fixes and general improvements.
+
+### Improvements
+- MAINT-2309 Prevent copy endpoint from modifying versioned Branch
+- PIP-575 Address CVE-2024-38816
+- PIP-584 Address CVE-2024-47072
+- PIP-583 Address CVE-2024-51132
+
+### Fixes
+- ISTO-125 Allow pagination beyond 10K for LOINC
+- ISTO-127 Improve handling of term search for LOINC
+
+## 10.6.1 Release (December 2024)
+Maintenance release with bug fix.
+
+### Fixes
+- MAINT-2699 Improve `additional-en-language-refset-delta` endpoint to support processing of duplicate ReferenceSetMembers.
+- MAINT-2691 Add 'clone' method to Annotation class to improve handling of annotations during rebase.
+
+## 10.5.0 Release (November 2024)
+Maintenance release with improvements
+### Improvements
+- MAINT-2602 Improve logging when encountering exception during CodeSystem upgrade
+- MAINT-2640 Improve logging when encountering exception interacting with Elasticsearch
+- MAINT-2667 Add French Edition to default application properties
+- MAINT-2464 Improve Snapshot import times
+
+### Fixes
+- MAINT-2665 Fix FHIR ValueSet expansion to search FSN & Synonyms, not Text Definitions
+- MAINT-2308 Fix blank assertion group names to skip validation
+- MAINT-2677 Fix bug where Semantic index was not updated when non-isa Relationships were inactivated
+
+## 10.4.3 Release (October 2024)
+Maintenance release with improvements
+### Improvements
+- MAINT-2679 Add refsets field to QueryConcept so that authoring platform can work with snowstorm-perf on the same semantic index
+
+## 10.4.2 Release (July 2024)
+Maintenance release with bug fixes and improvements.
+### Fixes
+- ISTO-119 Snowstorm MRCM search does not match translated terms
+- VAL-384 Exclude the relationships from the concept before running Drools validation
+- RAP-85 ModuleDependency automation not working as expected for Derivative releases
+- MAINT-2586 ECL member of query results return only active concepts when enclosed in round brackets
+- MAINT-2606 Fix ECL conjunction query search results with filters, supplements or member of queries
+- MAINT-2609 Update ECL parser to parse query containing memberOf and other unary operators such as descendantOf correctly
+- MAINT-2452 Snowstorm [fix]: prevent updates to published, inactive, malformed OWL axioms
+
+### Improvements
+- MAINT-2557 Adjust annotations filename and location to match expectations set in 20240601 International release
+- MAINT-2472 Write unit test to prove Snowstorm handles duplicate language reference set entries correctly
+- MAINT-2649 Allow RELEASE_LEAD to run "additional-en-language-refset-delta" operation
+
+## 10.3.1 Release (May 2024)
+Maintenance release with bug fixes and improvements.
+### Fixes
+- AMS-41 Update correct branch metadata item when upgrading CodeSystem
+- MAINT-2529 Prevent startup from failing if MAIN branch is locked
+
+### Improvements
+- MAINT-2528 Improve log message when Traceability data is chunked 
+- MAINT-2547 Allow configurable aggregation search size
+- VAL-376 Add Drools assertion for German language
+- VAL-377 Identify Relationships that are in a different module from the source Concept
+- MAINT-2449 Upgrade HAPI-FHIR to 7.0.2
+- MAINT-2550 Reduce excessive logging when classification job is timed out
+
+## 10.2.1 Release (March 2024)
+Maintenance release with bug fixes and improvements.
+### Fixes
+- MAINT-2476 Fix de-serialization bug when extra colon found in String concrete value
+- MAINT-2490 Stop applying default module id to components if module has expected value
+
+### Improvements
+- ISTO-107 Support loading LOINC 2.73 and above
+- MAINT-2493 Change annotation column from languageCode to languageDialectCode
+- MAINT-2403 Add option to store Extensions in separate Semantic index
+- MAINT-2496 Improve performance of integrity report by increasing page size
+
+## 10.1.1 Hotfix Release (February 2024)
+
+### Fixes
+- MAINT-2502 Performance improvement for rebasing
+
 ## 10.1.0 Release (January 2024)
 Maintenance release with bug fixes and improvements.
 

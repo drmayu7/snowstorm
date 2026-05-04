@@ -140,6 +140,10 @@ public class DailyBuildService {
 		codeSystemRepository.save(codeSystem);
 	}
 
+	public void rollbackDailyBuildContent(String codeSystemShortName) {
+		this.rollbackDailyBuildContent(codeSystemService.find(codeSystemShortName));
+	}
+
 	@PreAuthorize("hasPermission('ADMIN', #codeSystem.branchPath)")
 	public void rollbackDailyBuildContent(CodeSystem codeSystem) {
 		// Roll back commits on Code System branch if commit starts after latest release commit
@@ -211,7 +215,7 @@ public class DailyBuildService {
 
 	private void rollbackCommits(String path, List<Branch> rollbackList) {
 		logger.info("{} branch commits found to roll back on {}.", rollbackList.size(), path);
-		List<Class<? extends DomainEntity>> domainTypes = new ArrayList<>(domainEntityConfiguration.getAllDomainEntityTypes());
+		List<Class<? extends DomainEntity<?>>> domainTypes = new ArrayList<>(domainEntityConfiguration.getAllDomainEntityTypes());
 		for (Branch branchVersion : rollbackList) {
 			branchService.rollbackCompletedCommit(branchVersion, domainTypes);
 		}

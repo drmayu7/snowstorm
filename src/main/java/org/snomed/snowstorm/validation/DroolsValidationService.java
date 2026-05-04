@@ -65,6 +65,9 @@ public class DroolsValidationService {
 	@Autowired
 	private ConceptService conceptService;
 
+	@Autowired
+	private AxiomConversionService axiomConversionService;
+
 	private final String droolsRulesPath;
 	private final ResourceManager testResourceManager;
 
@@ -106,8 +109,7 @@ public class DroolsValidationService {
 		if (assertionGroupNamesMetaString == null) {
 			throw new ServiceException("'" + BranchMetadataKeys.ASSERTION_GROUP_NAMES + "' not set on branch metadata for Snomed-Drools validation configuration.");
 		}
-		String[] names = assertionGroupNamesMetaString.split(",");
-		Set<String> ruleSetNames = new HashSet<>(Arrays.asList(names));
+		Set<String> ruleSetNames = Arrays.stream(assertionGroupNamesMetaString.split(",")).map(String::trim).filter(StringUtils::hasLength).collect(Collectors.toSet());
 		if (ruleSetNames.isEmpty()) {
 			logger.info("Branch metadata item '{}' set as empty for {}, skipping Snomed-Drools validation.", BranchMetadataKeys.ASSERTION_GROUP_NAMES, branchPath);
 			return Collections.emptyList();
@@ -123,7 +125,7 @@ public class DroolsValidationService {
 		setReleaseHashAndEffectiveTime(concepts, branchCriteria);
 		Set<String> inferredTopLevelHierarchies = getTopLevelHierarchies();
 		DisposableQueryService disposableQueryService = new DisposableQueryService(queryService, branchPath, branchCriteria);
-		ConceptDroolsValidationService droolsConceptService = new ConceptDroolsValidationService(branchCriteria, elasticsearchOperations, disposableQueryService, inferredTopLevelHierarchies);
+		ConceptDroolsValidationService droolsConceptService = new ConceptDroolsValidationService(branchCriteria, elasticsearchOperations, disposableQueryService, inferredTopLevelHierarchies, versionControlHelper, axiomConversionService);
 		DescriptionDroolsValidationService droolsDescriptionService = new DescriptionDroolsValidationService(branchPath, branchCriteria, elasticsearchOperations,
 				this.descriptionService, disposableQueryService, testResourceProvider, inferredTopLevelHierarchies);
 		RelationshipDroolsValidationService relationshipService = new RelationshipDroolsValidationService(disposableQueryService);

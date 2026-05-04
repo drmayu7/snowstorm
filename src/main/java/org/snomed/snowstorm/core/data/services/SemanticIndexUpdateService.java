@@ -65,7 +65,7 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 	private static final long IS_A_TYPE = parseLong(Concepts.ISA);
 
 	@Autowired
-	private ElasticsearchOperations elasticsearchTemplate;
+	private ElasticsearchOperations elasticsearchOperations;
 
 	@Autowired
 	private VersionControlHelper versionControlHelper;
@@ -117,7 +117,7 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 	}
 
 	private void updateStatedAndInferredSemanticIndex(Commit commit) throws IllegalStateException, ConversionException, GraphBuilderException, ServiceException {
-		if (commit.isRebase()) {
+		if (commit.isRebase() || (useSeparateSemanticIndex(commit.getBranch()) && BranchMetadataHelper.isImportingCodeSystemVersion(commit) && !commit.getBranch().isContainsContent())) {
 			rebuildSemanticIndex(commit, false);
 		} else if (commit.getCommitType() != Commit.CommitType.PROMOTION) {
 			// Update query index using changes in the current commit
@@ -133,11 +133,14 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 		// If promotion the semantic changes will be promoted with the rest of the content.
 	}
 
+	private boolean useSeparateSemanticIndex(Branch branch) {
+		return versionControlHelper.getParentBranchesExcludedEntityClassNames(branch).contains(QueryConcept.class.getSimpleName());
+	}
+
 	private Map<String, Integer> rebuildSemanticIndex(Commit commit, boolean dryRun) throws ConversionException, GraphBuilderException, ServiceException {
 		Branch branch = commit.getBranch();
-
 		Set<String> relationshipAndAxiomDeletionsToProcess = Sets.union(branch.getVersionsReplaced(ReferenceSetMember.class), branch.getVersionsReplaced(Relationship.class));
-		boolean completeRebuild = branch.getPath().equals("MAIN");
+		boolean completeRebuild = branch.getPath().equals("MAIN") || useSeparateSemanticIndex(branch);
 		if (!completeRebuild) {
 			// Recreate query index using new parent base point + content on this branch
 			if (dryRun) {
@@ -201,7 +204,7 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 		if (completeRebuild) {
 			updatedConceptIds = Collections.emptySet();
 			newGraph = true;
-			logger.info("Performing rebuild of {} semantic index", form.getName());
+			logger.info("Performing complete rebuild of {} semantic index", form.getName());
 		} else {
 			updatedConceptIds = buildRelevantPartsOfExistingGraph(graphBuilder, form, changesCriteria, previousStateCriteria, internalIdsOfDeletedComponents, timer);
 			if (updatedConceptIds.isEmpty()) {
@@ -251,7 +254,7 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 		};
 
 		final BoolQuery.Builder sourceFilter = completeRebuild ? bool() : bool().must(termsQuery(Relationship.Fields.SOURCE_ID, updatedConceptIds));
-		try (final SearchHitsIterator<Relationship> activeRelationships = elasticsearchTemplate.searchForStream(new NativeQueryBuilder()
+		try (final SearchHitsIterator<Relationship> activeRelationships = elasticsearchOperations.searchForStream(new NativeQueryBuilder()
 				.withQuery(bool(b -> b
 						.must(newStateCriteria.getEntityBranchCriteria(Relationship.class))
 						.must(termQuery(SnomedComponent.Fields.ACTIVE, true))
@@ -278,13 +281,13 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 					.withSort(SortOptions.of(s -> s.field(f -> f.field("start"))))
 					.withPageable(LARGE_PAGE);
 			if (completeRebuild) {
-				try (final SearchHitsIterator<ReferenceSetMember> activeAxioms = elasticsearchTemplate.searchForStream(axiomSearchBuilder.build(), ReferenceSetMember.class)) {
+				try (final SearchHitsIterator<ReferenceSetMember> activeAxioms = elasticsearchOperations.searchForStream(axiomSearchBuilder.build(), ReferenceSetMember.class)) {
 					axiomStreamToRelationshipStream(activeAxioms, relationship -> true, relationshipConsumer);
 				}
 			} else {
 				for (List<Long> batch : Iterables.partition(updatedConceptIds, CLAUSE_LIMIT)) {
 					final BoolQuery.Builder referencedComponentFilter = bool().must(termsQuery(ReferenceSetMember.Fields.REFERENCED_COMPONENT_ID, batch));
-					try (final SearchHitsIterator<ReferenceSetMember> activeAxioms = elasticsearchTemplate.searchForStream(axiomSearchBuilder.withFilter(referencedComponentFilter.build()._toQuery()).build(), ReferenceSetMember.class)) {
+					try (final SearchHitsIterator<ReferenceSetMember> activeAxioms = elasticsearchOperations.searchForStream(axiomSearchBuilder.withFilter(referencedComponentFilter.build()._toQuery()).build(), ReferenceSetMember.class)) {
 						axiomStreamToRelationshipStream(activeAxioms, relationship -> true, relationshipConsumer);
 					}
 				}
@@ -326,7 +329,7 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 		if (!completeRebuild) {
 			filter.must(termsQuery(QueryConcept.Fields.CONCEPT_ID, conceptIdsToUpdate));
 		}
-		try (final SearchHitsIterator<QueryConcept> existingQueryConcepts = elasticsearchTemplate.searchForStream(new NativeQueryBuilder()
+		try (final SearchHitsIterator<QueryConcept> existingQueryConcepts = elasticsearchOperations.searchForStream(new NativeQueryBuilder()
 				.withQuery(bool(b -> b
 						.must(previousStateCriteria.getEntityBranchCriteria(QueryConcept.class))
 						.must(termQuery(QueryConcept.Fields.STATED, form.isStated()))
@@ -474,7 +477,7 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 	}
 
 	private Map<String, ConcreteValue.DataType> getConcreteAttributeDataTypeMap(Commit commit) throws ServiceException {
-		MRCM mrcm = mrcmLoader.loadActiveMRCM(commit.getBranch().getPath(), versionControlHelper.getBranchCriteriaIncludingOpenCommit(commit));
+		MRCM mrcm = mrcmLoader.loadActiveMRCM(versionControlHelper.getBranchCriteriaIncludingOpenCommit(commit));
 		return mrcm.attributeRanges().stream().filter(r -> r.getDataType() != null)
 				.collect(Collectors.toMap(AttributeRange::getReferencedComponentId, AttributeRange::getDataType, (r1, r2) -> r2));
 	}
@@ -489,7 +492,7 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 		Set<Long> existingDescendants = new LongOpenHashSet();
 
 		// Step: Collect source and destinations of changed is-a relationships
-		try (final SearchHitsIterator<Relationship> changedIsARelationships = elasticsearchTemplate.searchForStream(new NativeQueryBuilder()
+		try (final SearchHitsIterator<Relationship> changedIsARelationships = elasticsearchOperations.searchForStream(new NativeQueryBuilder()
 				.withQuery(bool(b -> b.filter(
 								bool(f -> f
 										.must(termQuery("typeId", Concepts.ISA))
@@ -502,7 +505,7 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 										)
 						)))
 				)
-				.withSourceFilter(new FetchSourceFilter(new String[]{Relationship.Fields.SOURCE_ID, Relationship.Fields.DESTINATION_ID}, null))
+				.withSourceFilter(new FetchSourceFilter(true, new String[]{Relationship.Fields.SOURCE_ID, Relationship.Fields.DESTINATION_ID}, null))
 				.withPageable(LARGE_PAGE).build(), Relationship.class)) {
 			changedIsARelationships.forEachRemaining(hit -> {
 				updateSource.add(parseLong(hit.getContent().getSourceId()));
@@ -513,7 +516,7 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 
 		if (form.isStated()) {
 			// Step: Collect source and destinations of is-a fragments within changed axioms
-			try (final SearchHitsIterator<ReferenceSetMember> changedAxioms = elasticsearchTemplate.searchForStream(new NativeQueryBuilder()
+			try (final SearchHitsIterator<ReferenceSetMember> changedAxioms = elasticsearchOperations.searchForStream(new NativeQueryBuilder()
 					.withQuery(bool(b -> b.filter(
 									bool(f -> f
 											.must(termQuery(ReferenceSetMember.Fields.REFSET_ID, Concepts.OWL_AXIOM_REFERENCE_SET))
@@ -525,7 +528,7 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 											))
 							))
 					)
-					.withSourceFilter(new FetchSourceFilter(new String[]{ReferenceSetMember.Fields.REFERENCED_COMPONENT_ID, ReferenceSetMember.OwlExpressionFields.OWL_EXPRESSION_FIELD_PATH}, null))
+					.withSourceFilter(new FetchSourceFilter(true, new String[]{ReferenceSetMember.Fields.REFERENCED_COMPONENT_ID, ReferenceSetMember.OwlExpressionFields.OWL_EXPRESSION_FIELD_PATH}, null))
 					.withPageable(LARGE_PAGE).build(), ReferenceSetMember.class)) {
 				axiomStreamToRelationshipStream(
 						changedAxioms,
@@ -546,7 +549,7 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 		}
 
 		// Collect source of any other changed relationships
-		try (SearchHitsIterator<Relationship> otherChangedRelationships = elasticsearchTemplate.searchForStream(new NativeQueryBuilder()
+		try (SearchHitsIterator<Relationship> otherChangedRelationships = elasticsearchOperations.searchForStream(new NativeQueryBuilder()
 				.withQuery(bool(b -> b.filter(
 								bool(bq -> bq
 										// Not 'is a'
@@ -562,7 +565,7 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 										.mustNot(termsQuery(Relationship.Fields.SOURCE_ID, updateSource))
 						)))
 				)
-				.withSourceFilter(new FetchSourceFilter(new String[]{Relationship.Fields.SOURCE_ID}, null))
+				.withSourceFilter(new FetchSourceFilter(true, new String[]{Relationship.Fields.SOURCE_ID}, null))
 				.withPageable(LARGE_PAGE)
 				.build(), Relationship.class)) {
 			otherChangedRelationships.forEachRemaining(hit -> updateSource.add(parseLong(hit.getContent().getSourceId())));
@@ -585,22 +588,22 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 						.must(termQuery("stated", form.isStated()))
 						.filter(termsQuery(QueryConcept.Fields.CONCEPT_ID, Sets.union(updateSource, updateDestination))))
 				)
-				.withSourceFilter(new FetchSourceFilter(new String[]{QueryConcept.Fields.ANCESTORS}, null))
+				.withSourceFilter(new FetchSourceFilter(true, new String[]{QueryConcept.Fields.ANCESTORS}, null))
 				.withPageable(LARGE_PAGE).build();
-		try (final SearchHitsIterator<QueryConcept> existingQueryConcepts = elasticsearchTemplate.searchForStream(query, QueryConcept.class)) {
+		try (final SearchHitsIterator<QueryConcept> existingQueryConcepts = elasticsearchOperations.searchForStream(query, QueryConcept.class)) {
 			existingQueryConcepts.forEachRemaining(hit -> existingAncestors.addAll(hit.getContent().getAncestors()));
 		}
 		timer.checkpoint("Collect existingAncestors from QueryConcept.");
 
 		// Step: Identify existing descendants
 		// Strategy: Find existing nodes where TC matches updated relationship source ids
-		try (final SearchHitsIterator<QueryConcept> existingQueryConcepts = elasticsearchTemplate.searchForStream(new NativeQueryBuilder()
+		try (final SearchHitsIterator<QueryConcept> existingQueryConcepts = elasticsearchOperations.searchForStream(new NativeQueryBuilder()
 				.withQuery(bool(b -> b
 						.must(existingContentCriteria.getEntityBranchCriteria(QueryConcept.class))
 						.must(termQuery("stated", form.isStated()))
 						.filter(termsQuery("ancestors", updateSource)))
 				)
-				.withSourceFilter(new FetchSourceFilter(new String[]{QueryConcept.Fields.CONCEPT_ID}, null))
+				.withSourceFilter(new FetchSourceFilter(true, new String[]{QueryConcept.Fields.CONCEPT_ID}, null))
 				.withPageable(LARGE_PAGE).build(), QueryConcept.class)) {
 			existingQueryConcepts.forEachRemaining(hit -> existingDescendants.add(hit.getContent().getConceptIdL()));
 		}
@@ -642,10 +645,10 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 						.must(termQuery(QueryConcept.Fields.STATED, stated))
 						.filter(termsQuery(QueryConcept.Fields.CONCEPT_ID, nodesToLoad)))
 				)
-				.withSourceFilter(new FetchSourceFilter(new String[]{QueryConcept.Fields.CONCEPT_ID, QueryConcept.Fields.PARENTS, QueryConcept.Fields.ANCESTORS}, null))
+				.withSourceFilter(new FetchSourceFilter(true, new String[]{QueryConcept.Fields.CONCEPT_ID, QueryConcept.Fields.PARENTS, QueryConcept.Fields.ANCESTORS}, null))
 				.withPageable(LARGE_PAGE);
 
-		try (SearchHitsIterator<QueryConcept> queryConcepts = elasticsearchTemplate.searchForStream(queryConceptQuery.build(), QueryConcept.class)) {
+		try (SearchHitsIterator<QueryConcept> queryConcepts = elasticsearchOperations.searchForStream(queryConceptQuery.build(), QueryConcept.class)) {
 			queryConcepts.forEachRemaining(hit -> {
 				for (Long parent : hit.getContent().getParents()) {
 					graphBuilder.addParent(hit.getContent().getConceptIdL(), parent);
@@ -734,12 +737,12 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 						.must(termQuery(SnomedComponent.Fields.ACTIVE, true))
 						.filter(termsQuery(Concept.Fields.CONCEPT_ID, requiredActiveConcepts)))
 				)
-				.withSourceFilter(new FetchSourceFilter(new String[]{Concept.Fields.CONCEPT_ID}, null))
+				.withSourceFilter(new FetchSourceFilter(true, new String[]{Concept.Fields.CONCEPT_ID}, null))
 				.withPageable(PageRequest.of(0, 1));
 
 		Query activeQuery = queryBuilder.build();
 		activeQuery.setTrackTotalHits(true);
-		SearchHits<Concept> concepts = elasticsearchTemplate.search(activeQuery, Concept.class);
+		SearchHits<Concept> concepts = elasticsearchOperations.search(activeQuery, Concept.class);
 		if (concepts.getTotalHits() == requiredActiveConcepts.size()) {
 			return Collections.emptySet();
 		}
@@ -749,7 +752,7 @@ public class SemanticIndexUpdateService extends ComponentService implements Comm
 		// Update query to collect concept ids efficiently
 		queryBuilder.withPageable(LARGE_PAGE);
 		Set<Long> missingConceptIds = new LongOpenHashSet(requiredActiveConcepts);
-		try (SearchHitsIterator<Concept> stream = elasticsearchTemplate.searchForStream(queryBuilder.build(), Concept.class)) {
+		try (SearchHitsIterator<Concept> stream = elasticsearchOperations.searchForStream(queryBuilder.build(), Concept.class)) {
 			stream.forEachRemaining(hit -> missingConceptIds.remove(hit.getContent().getConceptIdAsLong()));
 		}
 

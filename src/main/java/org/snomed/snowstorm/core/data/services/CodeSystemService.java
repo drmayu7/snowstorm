@@ -2,7 +2,7 @@ package org.snomed.snowstorm.core.data.services;
 
 import co.elastic.clients.elasticsearch._types.aggregations.AggregationBuilders;
 import co.elastic.clients.elasticsearch._types.aggregations.StringTermsBucket;
-import co.elastic.clients.json.JsonData;
+import co.elastic.clients.elasticsearch._types.query_dsl.RangeQuery;
 import com.google.common.base.Strings;
 import io.kaicode.elasticvc.api.BranchCriteria;
 import io.kaicode.elasticvc.api.BranchService;
@@ -39,6 +39,7 @@ import org.springframework.data.util.Pair;
 import org.springframework.jms.core.JmsTemplate;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -46,8 +47,7 @@ import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import static co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders.bool;
-import static co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders.range;
+import static co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders.*;
 import static io.kaicode.elasticvc.api.ComponentService.LARGE_PAGE;
 import static io.kaicode.elasticvc.helper.QueryHelper.*;
 import static java.lang.String.format;
@@ -112,7 +112,13 @@ public class CodeSystemService {
 	private boolean latestVersionCanBeInternalRelease;
 
 	@Value("${snowstorm.codesystem-version.message.enabled}")
-	private boolean jmsMessageEnabled;
+	private boolean jmsCodeSystemVersionMessageEnabled;
+
+	@Value("${snowstorm.codesystem-start-new-cycle.message.enabled}")
+	private boolean jmsCodeSystemNewAuthoringCycleMessageEnabled;
+
+	@Value("${snowstorm.branch-change.message.enabled}" )
+	private boolean jmsBranchChangeMessageEnabled;
 
 	// Cache to prevent expensive aggregations. Entry per branch. Expires if there is a new commit.
 	private final ConcurrentHashMap<String, Pair<Date, CodeSystem>> contentInformationCache = new ConcurrentHashMap<>();
@@ -254,7 +260,7 @@ public class CodeSystemService {
 
 		logger.info("Versioning complete.");
 
-		if (jmsMessageEnabled) {
+		if (jmsCodeSystemVersionMessageEnabled) {
 			Map<String, String> payload = new HashMap<>();
 			payload.put("codeSystemShortName", codeSystem.getShortName());
 			payload.put("codeSystemBranchPath", codeSystem.getBranchPath());
@@ -263,6 +269,13 @@ public class CodeSystemService {
 			String topicDestination = jmsQueuePrefix + ".versioning.complete";
 			logger.info("Sending JMS Topic - destination {}, payload {}...", topicDestination, payload);
 			jmsTemplate.convertAndSend(new ActiveMQTopic(topicDestination), payload);
+		}
+
+		if (jmsBranchChangeMessageEnabled)  {
+			Map<String, String> jmsObject = new HashMap<>();
+			jmsObject.put("branch", branchPath);
+			jmsObject.put("sourceBranch", branchPath);
+			jmsTemplate.convertAndSend(jmsQueuePrefix + ".branch.change", jmsObject);
 		}
 
 		return version;
@@ -549,7 +562,7 @@ public class CodeSystemService {
 		return findAllVersions(shortName, true, includeFutureVersions, includeInternalReleases);
 	}
 
-	private List<CodeSystemVersion> findAllVersions(String shortName, boolean ascOrder, boolean includeFutureVersions, boolean includeInternalReleases) {
+	public List<CodeSystemVersion> findAllVersions(String shortName, boolean ascOrder, boolean includeFutureVersions, boolean includeInternalReleases) {
 		List<CodeSystemVersion> content;
 		if (ascOrder) {
 			content = versionRepository.findByShortNameOrderByEffectiveDate(shortName, LARGE_PAGE).getContent();
@@ -560,7 +573,19 @@ public class CodeSystemService {
 		return content.stream()
 				.filter(version -> includeFutureVersions || (codeSystemsWithVersionVisibleAfterPublishedDate.contains(shortName) ? version.getEffectiveDate() < todaysEffectiveTime : version.getEffectiveDate() <= todaysEffectiveTime))
 				.filter(version -> includeInternalReleases || !version.isInternalRelease())
-				.collect(toList());
+				.toList();
+	}
+
+	/**
+	 * Find all versions of a code system with effective date greater than or equal to the given effective time
+	 */
+	public List<CodeSystemVersion> findAllVersionsAfterEffectiveTime(String shortName, Integer effectiveTime, boolean includeFutureVersions, boolean includeInternalReleases) {
+		List<CodeSystemVersion> content = versionRepository.findByShortNameAndEffectiveDateGreaterThanEqualOrderByEffectiveDate(shortName, effectiveTime, LARGE_PAGE).getContent();
+		int todaysEffectiveTime = DateUtil.getTodaysEffectiveTime();
+		return content.stream()
+				.filter(version -> includeFutureVersions || (codeSystemsWithVersionVisibleAfterPublishedDate.contains(shortName) ? version.getEffectiveDate() < todaysEffectiveTime : version.getEffectiveDate() <= todaysEffectiveTime))
+				.filter(version -> includeInternalReleases || !version.isInternalRelease())
+				.toList();
 	}
 
 	public CodeSystemVersion findLatestImportedVersion(String shortName) {
@@ -655,10 +680,14 @@ public class CodeSystemService {
 			throw new IllegalStateException(String.format("No release package found for %s", codeSystemVersion.getBranchPath()));
 		}
 		Metadata branchMetadata = branch.getMetadata();
+
+		// Previous release = the latest version's effective time
+		// Previous package = the latest version's release package
 		branchMetadata.putString(PREVIOUS_RELEASE, String.valueOf(codeSystemVersion.getEffectiveDate()));
 		branchMetadata.putString(PREVIOUS_PACKAGE, codeSystemVersion.getReleasePackage());
-		// Dependency package and previous dependency package should be updated during code system upgrade
-		if (branchMetadata.getString(DEPENDENCY_PACKAGE) == null && codeSystem.getDependantVersionEffectiveTime() != null) {
+
+		// Update previous dependency package if dependency is maintained
+		if (codeSystem.getDependantVersionEffectiveTime() != null) {
 			final Optional<CodeSystem> parentCodeSystem = findByBranchPath(PathUtil.getParentPath(branchPath));
 			if (parentCodeSystem.isEmpty()) {
 				throw new IllegalStateException("Dependant version set but parent code system not found.");
@@ -670,13 +699,29 @@ public class CodeSystemService {
 			if (Strings.isNullOrEmpty(parentCodeSystemVersion.getReleasePackage())) {
 				throw new IllegalStateException("No release package found for " + parentCodeSystemVersion);
 			}
-			branchMetadata.putString(DEPENDENCY_PACKAGE, parentCodeSystemVersion.getReleasePackage());
-			// Set previous dependency package the same as current dependent package
-			// This config will be updated during code system upgrade
 			branchMetadata.putString(PREVIOUS_DEPENDENCY_PACKAGE, parentCodeSystemVersion.getReleasePackage());
 		}
 		branchService.updateMetadata(branchPath, branchMetadata);
 	}
+
+    public void notifyCodeSystemNewAuthoringCycle(CodeSystem codeSystem, String newEffectiveTime){
+        if (jmsCodeSystemNewAuthoringCycleMessageEnabled) {
+            String branchPath = codeSystem.getBranchPath();
+            Branch branch = branchService.findBranchOrThrow(branchPath);
+            Metadata branchMetadata = branch.getMetadata();
+            Map<String, String> payload = new HashMap<>();
+            payload.put("codeSystemShortName", codeSystem.getShortName());
+            payload.put("codeSystemBranchPath", codeSystem.getBranchPath());
+            payload.put(PREVIOUS_PACKAGE, String.valueOf(branchMetadata.getString(PREVIOUS_PACKAGE)));
+            if (StringUtils.hasLength(newEffectiveTime)) {
+                payload.put("newEffectiveTime", newEffectiveTime);
+            }
+
+            String topicDestination = jmsQueuePrefix + ".code-system.new-authoring-cycle";
+            logger.info("Sending JMS Topic - destination {}, payload {}...", topicDestination, payload);
+            jmsTemplate.convertAndSend(new ActiveMQTopic(topicDestination), payload);
+        }
+    }
 
 	/**
 	 * Return versioned Branches for the given CodeSystem, where each Branch was versioned within the given time range.
@@ -710,9 +755,9 @@ public class CodeSystemService {
 		SearchHits<Branch> queryBranches = elasticsearchOperations.search(
 				new NativeQueryBuilder()
 						.withQuery(bool(b -> b
-										.must(range(r -> r.field("base").gt(JsonData.of(lowerBound)).lte(JsonData.of(upperBound))).range()._toQuery())
-										.mustNot(existsQuery(Branch.Fields.END)))
-						).withFilter(termsQuery(Branch.Fields.PATH, branchPaths))
+										.must(RangeQuery.of(r -> r.date(nrq -> nrq.field("base").gt(String.valueOf(lowerBound)).lte(String.valueOf(upperBound))))._toQuery())
+										.mustNot(existsQuery(Branch.Fields.END))))
+						.withFilter(termsQuery(Branch.Fields.PATH, branchPaths))
 						.build(), Branch.class
 		);
 

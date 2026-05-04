@@ -62,9 +62,20 @@ public class ReferenceSetMember extends SnomedComponent<ReferenceSetMember> impl
 	}
 
 	public interface AnnotationFields {
-		String LANGUAGE_CODE = "languageCode";
+		String LANGUAGE_DIALECT_CODE = "languageDialectCode";
 		String TYPE_ID = "typeId";
 		String VALUE = "value";
+	}
+
+	public interface MDRSFields {
+		String SOURCE_EFFECTIVE_TIME = "sourceEffectiveTime";
+		String TARGET_EFFECTIVE_TIME = "targetEffectiveTime";
+	}
+
+	public interface DescriptorFields {
+		String ATTRIBUTE_DESCRIPTION = "attributeDescription";
+		String ATTRIBUTE_TYPE = "attributeType";
+		String ATTRIBUTE_ORDER = "attributeOrder";
 	}
 
 	@JsonView(value = View.Component.class)

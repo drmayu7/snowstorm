@@ -42,7 +42,7 @@ public class UpgradeInactivationService {
 	private VersionControlHelper versionControlHelper;
 
 	@Autowired
-	private ElasticsearchOperations elasticsearchTemplate;
+	private ElasticsearchOperations elasticsearchOperations;
 
 	@Autowired
 	private ConceptUpdateHelper conceptUpdateHelper;
@@ -58,17 +58,22 @@ public class UpgradeInactivationService {
 		}
 		String branchPath = codeSystem.getBranchPath();
 		logger.info("Start auto description inactivation for inactive concepts for code system {} on branch {}", codeSystem.getShortName(), branchPath);
+		if (!enabled(branchPath)) {
+			logger.info("Skipping auto description inactivation for inactive concepts for code system {} on branch {}", codeSystem.getShortName(), branchPath);
+			return;
+		}
+
 		BranchCriteria branchCriteria = versionControlHelper.getBranchCriteria(branchPath);
 		// find inactive concept ids
 		NativeQuery inactiveConceptQuery = new NativeQueryBuilder()
 				.withQuery(bool(b -> b
 						.must(branchCriteria.getEntityBranchCriteria(Concept.class))
 						.must(termQuery(SnomedComponent.Fields.ACTIVE, false))))
-				.withSourceFilter(new FetchSourceFilter(new String[]{Concept.Fields.CONCEPT_ID}, null))
+				.withSourceFilter(new FetchSourceFilter(true, new String[]{Concept.Fields.CONCEPT_ID}, null))
 				.withPageable(ComponentService.LARGE_PAGE)
 				.build();
 		List<Long> inactiveConceptIds = new LongArrayList();
-		try (SearchHitsIterator<Concept> conceptResults = elasticsearchTemplate.searchForStream(inactiveConceptQuery, Concept.class)) {
+		try (SearchHitsIterator<Concept> conceptResults = elasticsearchOperations.searchForStream(inactiveConceptQuery, Concept.class)) {
 			conceptResults.forEachRemaining(hit -> inactiveConceptIds.add((hit.getContent().getConceptIdAsLong())));
 		}
 
@@ -90,12 +95,12 @@ public class UpgradeInactivationService {
 
 			NativeQuery descriptionsWithInactivationIndicators = new NativeQueryBuilder()
 					.withQuery(queryDescriptionsWithInactivationIndicators.build()._toQuery())
-					.withSourceFilter(new FetchSourceFilter(new String[]{REFERENCED_COMPONENT_ID}, null))
+					.withSourceFilter(new FetchSourceFilter(true, new String[]{REFERENCED_COMPONENT_ID}, null))
 					.withPageable(ComponentService.LARGE_PAGE)
 					.build();
 
 			List<Long> descriptionIdsWithIndicators = new LongArrayList();
-			try (SearchHitsIterator<ReferenceSetMember> memberResults = elasticsearchTemplate.searchForStream(descriptionsWithInactivationIndicators, ReferenceSetMember.class)) {
+			try (SearchHitsIterator<ReferenceSetMember> memberResults = elasticsearchOperations.searchForStream(descriptionsWithInactivationIndicators, ReferenceSetMember.class)) {
 				memberResults.forEachRemaining(hit -> descriptionIdsWithIndicators.add(Long.parseLong(hit.getContent().getReferencedComponentId())));
 			}
 
@@ -115,7 +120,7 @@ public class UpgradeInactivationService {
 					.withPageable(ComponentService.LARGE_PAGE)
 					.build();
 
-			try (SearchHitsIterator<Description> descriptions = elasticsearchTemplate.searchForStream(descriptionsWithoutInactivationIndicators, Description.class)) {
+			try (SearchHitsIterator<Description> descriptions = elasticsearchOperations.searchForStream(descriptionsWithoutInactivationIndicators, Description.class)) {
 				descriptions.forEachRemaining(hit -> {
 					Description description = hit.getContent();
 					// add description inactivation indicators
@@ -131,6 +136,7 @@ public class UpgradeInactivationService {
 
 		logger.info("{} descriptions found with inactive concepts but without concept non-current indicators", membersToSave.size());
 		if (!membersToSave.isEmpty()) {
+			//TODO What exception does this throw if we are unable to lock the branch?
 			try (Commit commit = branchService.openCommit(branchPath, branchMetadataHelper.getBranchLockMetadata("Concept non-current description inactivation"))) {
 				conceptUpdateHelper.doSaveBatchComponents(membersToSave, ReferenceSetMember.class, commit);
 				logger.info("Added {} concept non-current indicators for descriptions having inactive concepts. Member uuids: {}",
@@ -158,7 +164,7 @@ public class UpgradeInactivationService {
 							.must(termsQuery(REFERENCED_COMPONENT_ID, batch))
 							.must(existsQuery(ReferenceSetMember.LanguageFields.ACCEPTABILITY_ID_FIELD_PATH))))
 					.withPageable(ComponentService.LARGE_PAGE);
-			try (final SearchHitsIterator<ReferenceSetMember> activeMembers = elasticsearchTemplate.searchForStream(searchQueryBuilder.build(), ReferenceSetMember.class)) {
+			try (final SearchHitsIterator<ReferenceSetMember> activeMembers = elasticsearchOperations.searchForStream(searchQueryBuilder.build(), ReferenceSetMember.class)) {
 				activeMembers.forEachRemaining(hit -> removeOrInactivate(hit.getContent(), toDelete, toInactivate));
 			}
 		}
@@ -190,7 +196,7 @@ public class UpgradeInactivationService {
 						.must(termQuery(SnomedComponent.Fields.ACTIVE, true))
 						.must(termQuery(ReferenceSetMember.Fields.REFSET_ID, Concepts.OWL_AXIOM_REFERENCE_SET))))
 				.withPageable(ComponentService.LARGE_PAGE);
-		try (SearchHitsIterator<ReferenceSetMember> activeAxioms = elasticsearchTemplate.searchForStream(activeAxiomsQueryBuilder.build(), ReferenceSetMember.class)) {
+		try (SearchHitsIterator<ReferenceSetMember> activeAxioms = elasticsearchOperations.searchForStream(activeAxiomsQueryBuilder.build(), ReferenceSetMember.class)) {
 			activeAxioms.forEachRemaining(hit -> conceptToAxiomsMap.computeIfAbsent(Long.parseLong(hit.getContent().getReferencedComponentId()), axioms -> new ArrayList<>()).add(hit.getContent()));
 		}
 
@@ -206,9 +212,9 @@ public class UpgradeInactivationService {
 						.must(termQuery(SnomedComponent.Fields.ACTIVE, true))
 						.must(termsQuery(Concept.Fields.CONCEPT_ID, conceptToAxiomsMap.keySet())))
 				)
-				.withSourceFilter(new FetchSourceFilter(new String[]{Concept.Fields.CONCEPT_ID}, null))
+				.withSourceFilter(new FetchSourceFilter(true, new String[]{Concept.Fields.CONCEPT_ID}, null))
 				.withPageable(ComponentService.LARGE_PAGE);
-		try (SearchHitsIterator<Concept> activeConcepts = elasticsearchTemplate.searchForStream(activeConceptsQueryBuilder.build(), Concept.class)) {
+		try (SearchHitsIterator<Concept> activeConcepts = elasticsearchOperations.searchForStream(activeConceptsQueryBuilder.build(), Concept.class)) {
 			activeConcepts.forEachRemaining(hit -> activeConceptIds.add(hit.getContent().getConceptIdAsLong()));
 		}
 
@@ -265,10 +271,10 @@ public class UpgradeInactivationService {
 				.withQuery(bool(b -> b
 						.must(branchCriteria.getEntityBranchCriteria(Description.class))))
 				.withFilter(termQuery(ACTIVE, false))
-				.withSourceFilter(new FetchSourceFilter(new String[]{Description.Fields.DESCRIPTION_ID}, null))
+				.withSourceFilter(new FetchSourceFilter(true, new String[]{Description.Fields.DESCRIPTION_ID}, null))
 				.withPageable(ComponentService.LARGE_PAGE);
 
-		try (final SearchHitsIterator<Description> inactiveDescriptions = elasticsearchTemplate.searchForStream(searchQueryBuilder.build(), Description.class)) {
+		try (final SearchHitsIterator<Description> inactiveDescriptions = elasticsearchOperations.searchForStream(searchQueryBuilder.build(), Description.class)) {
 			inactiveDescriptions.forEachRemaining(hit -> result.add(Long.parseLong(hit.getContent().getDescriptionId())));
 		}
 		return result;
@@ -291,5 +297,28 @@ public class UpgradeInactivationService {
 		}
 
 		return expectedExtensionModules;
+	}
+
+	private boolean enabled(String branchPath) {
+		Branch branch = getBranchNullable(branchPath);
+		if (branch == null) {
+			return false;
+		}
+
+		Metadata metadata = branch.getMetadata();
+		if (metadata == null || metadata.size() == 0) {
+			return false;
+		}
+
+		String cncEnabled = metadata.containsKey(Config.CNC_ENABLED) ? metadata.getString(Config.CNC_ENABLED) : null;
+		return cncEnabled == null || "true".equalsIgnoreCase(cncEnabled);
+	}
+
+	private Branch getBranchNullable(String branchPath) {
+		try {
+			return branchService.findBranchOrThrow(branchPath, true);
+		} catch (Exception e) {
+			return null;
+		}
 	}
 }

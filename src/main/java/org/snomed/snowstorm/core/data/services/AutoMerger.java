@@ -269,6 +269,7 @@ public class AutoMerger {
                 mergedDescription.copyReleaseDetails(sourceDescription);
 
                 mergedDescription.setActive(getValueChanged(targetDescriptionOld.isActive(), targetDescriptionNew.isActive(), sourceDescription.isActive()));
+                mergedDescription.setInactivationIndicator(getValueChanged(targetDescriptionOld.getInactivationIndicator(), targetDescriptionNew.getInactivationIndicator(), sourceDescription.getInactivationIndicator()));
                 mergedDescription.setModuleId(getValueChanged(targetDescriptionOld.getModuleId(), targetDescriptionNew.getModuleId(), sourceDescription.getModuleId()));
                 mergedDescription.setTerm(getValueChanged(targetDescriptionOld.getTerm(), targetDescriptionNew.getTerm(), sourceDescription.getTerm()));
                 mergedDescription.setCaseSignificanceId(getValueChanged(targetDescriptionOld.getCaseSignificanceId(), targetDescriptionNew.getCaseSignificanceId(), sourceDescription.getCaseSignificanceId()));
@@ -554,18 +555,18 @@ public class AutoMerger {
                             )
                     );
                     mergedReferenceSetMember.setAdditionalField(
-                            ReferenceSetMember.AnnotationFields.LANGUAGE_CODE,
+                            ReferenceSetMember.AnnotationFields.LANGUAGE_DIALECT_CODE,
                             getValueChanged(
-                                    targetReferenceSetMemberOld.getAdditionalField(ReferenceSetMember.AnnotationFields.LANGUAGE_CODE),
-                                    targetReferenceSetMemberNew.getAdditionalField(ReferenceSetMember.AnnotationFields.LANGUAGE_CODE),
-                                    sourceReferenceSetMember.getAdditionalField(ReferenceSetMember.AnnotationFields.LANGUAGE_CODE)
+                                    targetReferenceSetMemberOld.getAdditionalField(ReferenceSetMember.AnnotationFields.LANGUAGE_DIALECT_CODE),
+                                    targetReferenceSetMemberNew.getAdditionalField(ReferenceSetMember.AnnotationFields.LANGUAGE_DIALECT_CODE),
+                                    sourceReferenceSetMember.getAdditionalField(ReferenceSetMember.AnnotationFields.LANGUAGE_DIALECT_CODE)
                             )
                     );
                 } else {
                     mergedReferenceSetMember.setRefsetId(sourceReferenceSetMember.getRefsetId());
                     mergedReferenceSetMember.setAdditionalField(ReferenceSetMember.AnnotationFields.TYPE_ID, sourceReferenceSetMember.getAdditionalField(ReferenceSetMember.AnnotationFields.TYPE_ID));
                     mergedReferenceSetMember.setAdditionalField(ReferenceSetMember.AnnotationFields.VALUE, sourceReferenceSetMember.getAdditionalField(ReferenceSetMember.AnnotationFields.VALUE));
-                    mergedReferenceSetMember.setAdditionalField(ReferenceSetMember.AnnotationFields.LANGUAGE_CODE, sourceReferenceSetMember.getAdditionalField(ReferenceSetMember.AnnotationFields.LANGUAGE_CODE));
+                    mergedReferenceSetMember.setAdditionalField(ReferenceSetMember.AnnotationFields.LANGUAGE_DIALECT_CODE, sourceReferenceSetMember.getAdditionalField(ReferenceSetMember.AnnotationFields.LANGUAGE_DIALECT_CODE));
                 }
 
                 // Re-apply mutable fields

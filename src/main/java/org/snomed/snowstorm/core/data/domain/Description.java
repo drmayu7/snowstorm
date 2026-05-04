@@ -242,7 +242,7 @@ public class Description extends SnomedComponent<Description> implements SnomedC
 			if (member.isActive()) {
 				String acceptabilityId = member.getAdditionalField(ReferenceSetMember.LanguageFields.ACCEPTABILITY_ID);
 				String acceptabilityStr = Concepts.descriptionAcceptabilityNames.get(acceptabilityId);
-				map.put(member.getRefsetId(), acceptabilityStr);
+				map.putIfAbsent(member.getRefsetId(), acceptabilityStr);
 			}
 		}
 		return map;
@@ -513,6 +513,7 @@ public class Description extends SnomedComponent<Description> implements SnomedC
 	public void clone(Description description) {
 		setDescriptionId(description.getDescriptionId());
 		setActive(description.isActive());
+		setInactivationIndicator(description.getInactivationIndicator());
 		setTerm(description.getTerm());
 		setConceptId(description.getConceptId());
 		setEffectiveTimeI(description.getEffectiveTimeI());

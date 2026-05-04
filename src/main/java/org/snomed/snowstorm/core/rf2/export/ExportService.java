@@ -3,15 +3,13 @@ package org.snomed.snowstorm.core.rf2.export;
 import co.elastic.clients.elasticsearch._types.SortOptions;
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
-import co.elastic.clients.json.JsonData;
+import co.elastic.clients.elasticsearch._types.query_dsl.RangeQuery;
 import com.google.common.collect.Sets;
 import io.kaicode.elasticvc.api.BranchCriteria;
 import io.kaicode.elasticvc.api.BranchService;
 import io.kaicode.elasticvc.api.VersionControlHelper;
-import io.kaicode.elasticvc.domain.Branch;
 
 import org.apache.tomcat.util.http.fileupload.util.Streams;
-import org.drools.util.StringUtils;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,16 +17,10 @@ import org.snomed.snowstorm.core.data.domain.*;
 import org.snomed.snowstorm.core.data.domain.jobs.ExportConfiguration;
 import org.snomed.snowstorm.core.data.domain.jobs.ExportStatus;
 import org.snomed.snowstorm.core.data.repositories.ExportConfigurationRepository;
-import org.snomed.snowstorm.core.data.services.BranchMetadataHelper;
-import org.snomed.snowstorm.core.data.services.BranchMetadataKeys;
-import org.snomed.snowstorm.core.data.services.CodeSystemService;
-import org.snomed.snowstorm.core.data.services.ModuleDependencyService;
-import org.snomed.snowstorm.core.data.services.NotFoundException;
-import org.snomed.snowstorm.core.data.services.QueryService;
+import org.snomed.snowstorm.core.data.services.*;
 import org.snomed.snowstorm.core.rf2.RF2Type;
 import org.snomed.snowstorm.core.util.DateUtil;
 import org.snomed.snowstorm.core.util.TimerUtil;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.data.elasticsearch.core.SearchHit;
 import org.springframework.data.elasticsearch.core.SearchHitsIterator;
@@ -53,34 +45,29 @@ import static io.kaicode.elasticvc.helper.QueryHelper.*;
 @Service
 public class ExportService {
 
-	@Autowired
-	private VersionControlHelper versionControlHelper;
+	private final VersionControlHelper versionControlHelper;
+	private final ElasticsearchOperations elasticsearchOperations;
+	private final QueryService queryService;
+	private final ExportConfigurationRepository exportConfigurationRepository;
+	private final BranchService branchService;
+	private final BranchMetadataHelper branchMetadataHelper;
+	private final CodeSystemService codeSystemService;
+	private final ExecutorService executorService;
+	private final SBranchService sBranchService;
 
-	@Autowired
-	private ElasticsearchOperations elasticsearchOperations;
+	public ExportService(VersionControlHelper versionControlHelper, ElasticsearchOperations elasticsearchOperations, QueryService queryService, ExportConfigurationRepository exportConfigurationRepository, BranchService branchService, BranchMetadataHelper branchMetadataHelper, CodeSystemService codeSystemService, ExecutorService executorService, SBranchService sBranchService) {
+		this.versionControlHelper = versionControlHelper;
+		this.elasticsearchOperations = elasticsearchOperations;
+		this.queryService = queryService;
+		this.exportConfigurationRepository = exportConfigurationRepository;
+		this.branchService = branchService;
+		this.branchMetadataHelper = branchMetadataHelper;
+		this.codeSystemService = codeSystemService;
+		this.executorService = executorService;
+		this.sBranchService = sBranchService;
+	}
 
-	@Autowired
-	private QueryService queryService;
-
-	@Autowired
-	private ExportConfigurationRepository exportConfigurationRepository;
-
-	@Autowired
-	private BranchService branchService;
-
-	@Autowired
-	private BranchMetadataHelper branchMetadataHelper;
-
-	@Autowired
-	private ModuleDependencyService mdrService;
-
-	@Autowired
-	private CodeSystemService codeSystemService;
-
-	@Autowired
-	private ExecutorService executorService;
-
-	private final Set<String> refsetTypesRequiredForClassification = Sets.newHashSet(Concepts.REFSET_MRCM_ATTRIBUTE_DOMAIN, Concepts.OWL_EXPRESSION_TYPE_REFERENCE_SET);
+	private final Set<String> refsetTypesRequiredForClassification = Sets.newHashSet(Concepts.REFSET_MRCM_ATTRIBUTE_DOMAIN, Concepts.OWL_EXPRESSION_TYPE_REFERENCE_SET, Concepts.MODULE_DEPENDENCY_REFERENCE_SET);
 
 	private final Logger logger = LoggerFactory.getLogger(getClass());
 
@@ -141,7 +128,7 @@ public class ExportService {
 	}
 
 	public File exportRF2ArchiveFile(String branchPath, String filenameEffectiveDate, RF2Type exportType, boolean forClassification) throws ExportException {
-		return exportRF2ArchiveFile(branchPath, filenameEffectiveDate, exportType, forClassification, false, null, null, null, true, new HashSet<>(), null);
+		return exportRF2ArchiveFile(branchPath, filenameEffectiveDate, exportType, forClassification, false, null, null, new HashSet<>(), true, new HashSet<>(), null);
 	}
 
 	public void exportRF2ArchiveAsync(ExportConfiguration exportConfiguration) {
@@ -210,11 +197,6 @@ public class ExportService {
 			throw new IllegalArgumentException("FULL RF2 export is not implemented.");
 		}
 
-		boolean generateMDR = false;
-		if (exportType == RF2Type.DELTA && !StringUtils.isEmpty(transientEffectiveTime) && !unpromotedChangesOnly) {
-			generateMDR = true;
-		}
-
 		String exportStr = exportId == null ? "" : (" - " + exportId);
 		logger.info("Starting {} export of {}{}", exportType, branchPath, exportStr);
 		Date startTime = new Date();
@@ -232,11 +214,6 @@ public class ExportService {
 				codeSystemRF2Name = codeSystem.getShortCode();
 			}
 		}
-
-		//Need to detect if this is an Edition or Extension package so we know what MDRS rows to export
-		//Extensions only mention their own modules, despite being able to "see" those on MAIN
-		Branch branch = branchService.findBranchOrThrow(branchPath, true);
-		final boolean isExtension = (branch.getMetadata() != null && !StringUtils.isEmpty(branch.getMetadata().getString(BranchMetadataKeys.DEPENDENCY_PACKAGE)));
 
 		try {
 			branchService.lockBranch(branchPath, branchMetadataHelper.getBranchLockMetadata("Exporting RF2 " + exportType.getName()));
@@ -309,36 +286,16 @@ public class ExportService {
 				logger.info("{} Reference Set Types found for this export: {}", referenceSetTypes.size(), referenceSetTypes);
 
 				Query memberBranchCriteria = selectionBranchCriteria.getEntityBranchCriteria(ReferenceSetMember.class);
+				Set<String> moduleIdsBackup = moduleIds;
 				for (ReferenceSetType referenceSetType : referenceSetTypes) {
 					List<Long> refsetsOfThisType = new ArrayList<>(queryService.findDescendantIdsAsUnion(allContentBranchCriteria, true, Collections.singleton(Long.parseLong(referenceSetType.getConceptId()))));
 					refsetsOfThisType.add(Long.parseLong(referenceSetType.getConceptId()));
 					for (Long refsetToExport : refsetsOfThisType) {
-						boolean isMDRS =  refsetToExport.toString().equals(Concepts.REFSET_MODULE_DEPENDENCY);
-						//Export filter is pass-through when null
-						ExportFilter<ReferenceSetMember> exportFilter = null;
-						if (isMDRS) {
-							logger.info("MDRS being exported for " + (isExtension?"extension":"edition") + " package style.");
-							exportFilter = rm -> mdrService.isExportable(rm, isExtension);
-						}
-						if (generateMDR && isMDRS) {
-							logger.info("MDR being generated rather than persisted.");
-							String exportDir = referenceSetType.getExportDir();
-							String entryDirectory = !exportDir.startsWith("/") ? "Refset/" + exportDir + "/" : exportDir.substring(1) + "/";
-							String entryFilenamePrefix = (!entryDirectory.startsWith("Terminology/") ? "der2_" : "sct2_") + referenceSetType.getFieldTypes() + "Refset_" + referenceSetType.getName() + (refsetsOfThisType.size() > 1 ? refsetToExport : "");
-							int rowCount = exportComponents(
-									ReferenceSetMember.class,
-									entryDirectoryPrefix, entryDirectory,
-									entryFilenamePrefix,
-									filenameEffectiveDate,
-									exportType,
-									zipOutputStream,
-									mdrService.generateModuleDependencies(branchPath, transientEffectiveTime, moduleIds, exportType.equals(RF2Type.DELTA), null),
-									transientEffectiveTime,
-									referenceSetType.getFieldNameList(),
-									codeSystemRF2Name,
-									exportFilter);
-							logger.info("Exported Reference Set {} {} with {} members", refsetToExport, referenceSetType.getName(), rowCount);
-						} else if (!refsetOnlyExport || refsetIds.contains(refsetToExport.toString())) {
+						if (!refsetOnlyExport || refsetIds.contains(refsetToExport.toString())) {
+							if (Concepts.MODULE_DEPENDENCY_REFERENCE_SET.equals(String.valueOf(refsetToExport))) {
+								moduleIds.addAll(sBranchService.getModules(branchPath));
+							}
+
 							BoolQuery.Builder memberQueryBuilder = getContentQuery(exportType, moduleIds, startEffectiveTime, memberBranchCriteria);
 							memberQueryBuilder.must(termQuery(ReferenceSetMember.Fields.REFSET_ID, refsetToExport));
 							Query memberQuery = memberQueryBuilder.build()._toQuery();
@@ -359,8 +316,9 @@ public class ExportService {
 										transientEffectiveTime,
 										referenceSetType.getFieldNameList(),
 										codeSystemRF2Name,
-										exportFilter);
+										null);
 							}
+							moduleIds = moduleIdsBackup;
 						}
 					}
 				}
@@ -393,8 +351,8 @@ public class ExportService {
 		if (startEffectiveTime != null) {
 			contentQuery.must(bool(b -> b
 					.should(bool(bq -> bq.mustNot(existsQuery(SnomedComponent.Fields.EFFECTIVE_TIME))))
-					.should(range().field(SnomedComponent.Fields.EFFECTIVE_TIME)
-							.gte(JsonData.of(Integer.parseInt(startEffectiveTime))).build()._toQuery())));
+					.should(RangeQuery.of(r -> r.number(nrq -> nrq.field(SnomedComponent.Fields.EFFECTIVE_TIME)
+							.gte((double)Integer.parseInt(startEffectiveTime))))._toQuery())));
 		}
 		return contentQuery;
 	}
@@ -428,31 +386,6 @@ public class ExportService {
 	private <T> void doFilteredWrite(ExportFilter<T> exportFilter, ExportWriter<T> writer, T item) {
 		if (exportFilter == null || exportFilter.isValid(item)) {
 			writer.write(item);
-		}
-	}
-
-	private <T> int exportComponents(Class<T> componentClass, String entryDirectoryPrefix, String entryDirectory, String entryFilenamePrefix, String filenameEffectiveDate,
-			RF2Type exportType, ZipOutputStream zipOutputStream, Set<T> components, String transientEffectiveTime, List<String> extraFieldNames, String codeSystemRF2Name,
-			ExportFilter<T> exportFilter) {
-
-		String componentFilePath = entryDirectoryPrefix + entryDirectory + entryFilenamePrefix + format("%s_%s_%s.txt", exportType.getName(), codeSystemRF2Name, filenameEffectiveDate);
-		logger.info("Exporting file {}", componentFilePath);
-		try {
-			// Open zip entry
-			zipOutputStream.putNextEntry(new ZipEntry(componentFilePath));
-
-			// Stream components into zip
-			try (ExportWriter<T> writer = getExportWriter(componentClass, zipOutputStream, extraFieldNames, entryFilenamePrefix.contains("Concrete"))) {
-				writer.setTransientEffectiveTime(transientEffectiveTime);
-				writer.writeHeader();
-				components.forEach(c -> doFilteredWrite(exportFilter, writer, c));
-				return writer.getContentLinesWritten();
-			} finally {
-				// Close zip entry
-				zipOutputStream.closeEntry();
-			}
-		} catch (IOException e) {
-			throw new ExportException("Failed to write export zip entry '" + componentFilePath + "'", e);
 		}
 	}
 

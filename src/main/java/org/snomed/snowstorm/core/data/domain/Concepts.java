@@ -14,6 +14,7 @@ public class Concepts {
 	public static final String CORE_MODULE = "900000000000207008";
 	public static final String MODEL_MODULE = "900000000000012004";
 	public static final String ICD10_MODULE = "449080006";
+	public static final String ICD11_MODULE = "1204363008";
 	public static final String COMMON_FRENCH_MODULE = "11000241103";
 	public static final String MODULE = "900000000000443000";
 
@@ -24,6 +25,10 @@ public class Concepts {
 	public static final String FSN = "900000000000003001";
 	public static final String SYNONYM = "900000000000013009";
 	public static final String TEXT_DEFINITION = "900000000000550004";
+
+	public static final long FSN_L = 900000000000003001L;
+	public static final long SYNONYM_L = 900000000000013009L;
+	public static final long TEXT_DEFINITION_L = 900000000000550004L;
 
 	public static final String ACCEPTABLE = "900000000000549004";
 	public static final String ACCEPTABLE_CONSTANT = "ACCEPTABLE";
@@ -197,4 +202,5 @@ public class Concepts {
 	public static final String REFERENCED_COMPONENT = "449608002";
 	public static final String CONCEPT_TYPE_COMPONENT = "900000000000461009";
 
+	public static final String MODULE_DEPENDENCY_REFERENCE_SET = "900000000000534007";
 }

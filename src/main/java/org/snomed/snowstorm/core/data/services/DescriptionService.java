@@ -66,6 +66,7 @@ import static io.kaicode.elasticvc.helper.QueryHelper.*;
 import static org.snomed.snowstorm.config.Config.*;
 import static org.snomed.snowstorm.core.data.domain.ReferenceSetMember.Fields.REFSET_ID;
 import static org.snomed.snowstorm.core.data.domain.ReferenceSetMember.LanguageFields.ACCEPTABILITY_ID_FIELD_PATH;
+import static org.snomed.snowstorm.core.data.domain.SnomedComponent.Fields.ACTIVE;
 import static org.snomed.snowstorm.core.util.AggregationUtils.getAggregations;
 
 
@@ -92,6 +93,13 @@ public class DescriptionService extends ComponentService {
 
 	@Autowired
 	private DialectConfigurationService dialectConfigurationService;
+
+	@Value("${search.refset.aggregation.size}")
+	private int refsetAggregationSearchSize;
+
+
+	@Value("${search.description.semantic.tag.aggregation.size}")
+	private int semanticTagAggregationSearchSize;
 
 	private final Map<String, SemanticTagCacheEntry> semanticTagAggregationCache = new ConcurrentHashMap<>();
 
@@ -223,6 +231,7 @@ public class DescriptionService extends ComponentService {
 			}
 			fsnClauses.must(termsQuery(Description.Fields.TAG, allSemanticTags));
 		}
+		int searchSize = allSemanticTags.isEmpty() ? semanticTagAggregationSearchSize : allSemanticTags.size();
 		NativeQueryBuilder fsnQueryBuilder = new NativeQueryBuilder()
 				.withQuery(fsnClauses
 						.must(branchCriteria.getEntityBranchCriteria(Description.class))
@@ -230,7 +239,7 @@ public class DescriptionService extends ComponentService {
 						.must(termQuery(Description.Fields.TYPE_ID, Concepts.FSN))
 						.must(termsQuery(Description.Fields.CONCEPT_ID, conceptIds)).build()._toQuery()
 				)
-				.withAggregation("semanticTags", AggregationBuilders.terms().field(Description.Fields.TAG).size(AGGREGATION_SEARCH_SIZE).build()._toAggregation());
+				.withAggregation("semanticTags", AggregationBuilders.terms().field(Description.Fields.TAG).size(searchSize).build()._toAggregation());
 		if (!semanticTagFiltering) {
 			fsnQueryBuilder.withPageable(PAGE_OF_ONE);
 			SearchHits<Description> semanticTagResults = elasticsearchOperations.search(fsnQueryBuilder.build(), Description.class);
@@ -242,7 +251,7 @@ public class DescriptionService extends ComponentService {
 			// Apply semantic tag filter
 			fsnQueryBuilder
 					.withPageable(LARGE_PAGE)
-					.withSourceFilter(new FetchSourceFilter(new String[]{Description.Fields.CONCEPT_ID}, null));
+					.withSourceFilter(new FetchSourceFilter(true, new String[]{Description.Fields.CONCEPT_ID}, null));
 
 			Set<Long> conceptSemanticTagMatches = new LongOpenHashSet();
 			if (allSemanticTags.size() == 1) {
@@ -269,7 +278,7 @@ public class DescriptionService extends ComponentService {
 						.filter(termsQuery(ReferenceSetMember.Fields.REFERENCED_COMPONENT_ID, conceptIds)).build()._toQuery()
 				)
 				.withPageable(PAGE_OF_ONE)
-				.withAggregation("membership", AggregationBuilders.terms().field(REFSET_ID).size(AGGREGATION_SEARCH_SIZE).build()._toAggregation())
+				.withAggregation("membership", AggregationBuilders.terms().field(REFSET_ID).size(refsetAggregationSearchSize).build()._toAggregation())
 				.build(), ReferenceSetMember.class);
 		if (membershipResults.hasAggregations()) {
 			allAggregations.addAll(getAggregations(membershipResults.getAggregations(), "membership"));
@@ -378,7 +387,7 @@ public class DescriptionService extends ComponentService {
 				.withQuery(bool(bq -> bq
 						.must(branchCriteria.getEntityBranchCriteria(Concept.class))
 						.must(termQuery(Concept.Fields.ACTIVE, true))))
-				.withSourceFilter(new FetchSourceFilter(new String[]{Concept.Fields.CONCEPT_ID}, null))
+				.withSourceFilter(new FetchSourceFilter(true, new String[]{Concept.Fields.CONCEPT_ID}, null))
 				.withPageable(LARGE_PAGE).build(), Concept.class)) {
 			stream.forEachRemaining(hit -> activeConcepts.add(hit.getContent().getConceptIdAsLong()));
 		}
@@ -390,7 +399,7 @@ public class DescriptionService extends ComponentService {
 						.must(termQuery(Description.Fields.TYPE_ID, Concepts.FSN))
 						.filter(termsQuery(Description.Fields.CONCEPT_ID, activeConcepts)))
 				)
-				.withAggregation("semanticTags", AggregationBuilders.terms(a -> a.field(Description.Fields.TAG).size(AGGREGATION_SEARCH_SIZE)))
+				.withAggregation("semanticTags", AggregationBuilders.terms(a -> a.field(Description.Fields.TAG).size(semanticTagAggregationSearchSize)))
 				.build(), Description.class);
 
 		Map<String, Long> tagCounts = new TreeMap<>();
@@ -545,7 +554,7 @@ public class DescriptionService extends ComponentService {
 		final SortedMap<Long, Long> descriptionToConceptMap = new Long2ObjectLinkedOpenHashMap<>();
 		NativeQueryBuilder searchQueryBuilder = new NativeQueryBuilder()
 				.withQuery(criteria.build()._toQuery())
-				.withSourceFilter(new FetchSourceFilter(new String[]{Description.Fields.DESCRIPTION_ID, Description.Fields.CONCEPT_ID}, null))
+				.withSourceFilter(new FetchSourceFilter(true, new String[]{Description.Fields.DESCRIPTION_ID, Description.Fields.CONCEPT_ID}, null))
 				.withPageable(LARGE_PAGE);
 		try (SearchHitsIterator<Description> stream = elasticsearchOperations.searchForStream(searchQueryBuilder.build(), Description.class)) {
 			stream.forEachRemaining(hit -> {
@@ -583,7 +592,7 @@ public class DescriptionService extends ComponentService {
 
 				NativeQueryBuilder langRefsetSearch = new NativeQueryBuilder()
 						.withQuery(masterLangRefsetQuery.build()._toQuery())
-						.withSourceFilter(new FetchSourceFilter(new String[]{ReferenceSetMember.Fields.REFERENCED_COMPONENT_ID}, null))
+						.withSourceFilter(new FetchSourceFilter(true, new String[]{ReferenceSetMember.Fields.REFERENCED_COMPONENT_ID}, null))
 						.withPageable(LARGE_PAGE);
 				Set<Long> acceptableDescriptions = new LongOpenHashSet();
 				try (SearchHitsIterator<ReferenceSetMember> stream = elasticsearchOperations.searchForStream(langRefsetSearch.build(), ReferenceSetMember.class)) {
@@ -673,7 +682,7 @@ public class DescriptionService extends ComponentService {
 		Query descriptionQuery = descriptionQueryBuilder.build()._toQuery();
 		NativeQueryBuilder searchQueryBuilder = new NativeQueryBuilder()
 				.withQuery(descriptionQuery)
-				.withSourceFilter(new FetchSourceFilter(new String[]{Description.Fields.DESCRIPTION_ID, Description.Fields.CONCEPT_ID}, null));
+				.withSourceFilter(new FetchSourceFilter(true, new String[]{Description.Fields.DESCRIPTION_ID, Description.Fields.CONCEPT_ID}, null));
 
 		NativeQuery query = searchQueryBuilder.withPageable(PAGE_OF_ONE).build();
 		query.setTrackTotalHits(true);
@@ -749,7 +758,7 @@ public class DescriptionService extends ComponentService {
 			NativeQuery nativeSearchQuery = new NativeQueryBuilder()
 					.withQuery(queryBuilder.build()._toQuery())
 					.withFilter(termsQuery(ReferenceSetMember.Fields.REFERENCED_COMPONENT_ID, descriptionToConceptMap.keySet()))
-					.withSourceFilter(new FetchSourceFilter(new String[]{ReferenceSetMember.Fields.REFERENCED_COMPONENT_ID}, null))
+					.withSourceFilter(new FetchSourceFilter(true, new String[]{ReferenceSetMember.Fields.REFERENCED_COMPONENT_ID}, null))
 					.withPageable(LARGE_PAGE)
 					.build();
 			Set<Long> filteredDescriptionIds = new LongOpenHashSet();
@@ -785,7 +794,7 @@ public class DescriptionService extends ComponentService {
 										.filter(termsQuery(Concept.Fields.CONCEPT_ID, conceptIdsToSearch)))
 								)
 								.withSort(SortOptions.of(sb -> sb.field(fs -> fs.field("_doc"))))
-								.withSourceFilter(new FetchSourceFilter(new String[]{Concept.Fields.CONCEPT_ID}, null))
+								.withSourceFilter(new FetchSourceFilter(true, new String[]{Concept.Fields.CONCEPT_ID}, null))
 								.withPageable(LARGE_PAGE)
 								.build(), Concept.class)) {
 					stream.forEachRemaining(hit -> filteredConceptIds.add(hit.getContent().getConceptIdAsLong()));
@@ -802,11 +811,12 @@ public class DescriptionService extends ComponentService {
 						new NativeQueryBuilder()
 								.withQuery(bool(bq -> bq
 										.must(termQuery(REFSET_ID, criteria.getConceptRefset()))
+										.must(termQuery(ACTIVE, true))
 										.filter(branchCriteria.getEntityBranchCriteria(ReferenceSetMember.class))
 										.filter(termsQuery(ReferenceSetMember.Fields.REFERENCED_COMPONENT_ID, conceptIdsToSearch)))
 								)
 								.withSort(SortOptions.of(sb -> sb.field(fs -> fs.field("_doc"))))
-								.withSourceFilter(new FetchSourceFilter(new String[]{ReferenceSetMember.Fields.REFERENCED_COMPONENT_ID}, null))
+								.withSourceFilter(new FetchSourceFilter(true, new String[]{ReferenceSetMember.Fields.REFERENCED_COMPONENT_ID}, null))
 								.withPageable(LARGE_PAGE)
 								.build(), ReferenceSetMember.class)) {
 					stream.forEachRemaining(hit -> filteredConceptIds.add(parseLong(hit.getContent().getReferencedComponentId())));
@@ -935,7 +945,7 @@ public class DescriptionService extends ComponentService {
 		}
 	}
 
-	private List<String> analyze(String text, StandardAnalyzer analyzer) {
+	public static List<String> analyze(String text, StandardAnalyzer analyzer) {
 		List<String> result = new ArrayList<>();
 		try {
 			TokenStream tokenStream = analyzer.tokenStream("contents", text);
@@ -945,12 +955,13 @@ public class DescriptionService extends ComponentService {
 				result.add(attr.toString());
 			}
 		} catch (IOException e) {
-			logger.error("Failed to analyze text {}", text, e);
+			LoggerFactory.getLogger(DescriptionService.class)
+					.error("Failed to analyze text {}", text, e);
 		}
 		return result;
 	}
 
-	private String constructSimpleQueryString(String searchTerm) {
+	public static String constructSimpleQueryString(String searchTerm) {
 		return (searchTerm.trim().replace(" ", "* ") + "*").replace("**", "*");
 	}
 
@@ -992,7 +1003,7 @@ public class DescriptionService extends ComponentService {
 		return regexBuilder.toString();
 	}
 
-	private String constructSearchTerm(List<String> tokens) {
+	public static String constructSearchTerm(List<String> tokens) {
 		StringBuilder builder = new StringBuilder();
 		for (String token : tokens) {
 			builder.append(token);

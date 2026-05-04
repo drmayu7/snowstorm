@@ -125,7 +125,6 @@ public class ClassificationService {
 	private final List<Classification> classificationsInProgress;
 	private final Map<String, SecurityContext> classificationUserIdToUserContextMap;
 
-	private Thread classificationStatusPollingThread;
 	private boolean shutdownRequested;
 
 	public static final int RESULT_PROCESSING_THREADS = 2;// Two threads is a good limit here. The processing is very Elasticsearch heavy while looking up inferred-not-stated values.
@@ -177,7 +176,7 @@ public class ClassificationService {
 		}
 
 		// Start thread to continuously fetch the status of remote classifications
-		classificationStatusPollingThread = new Thread(() -> {
+		Thread classificationStatusPollingThread = new Thread(() -> {
 			try {
 				while (!shutdownRequested) {
 					try {
@@ -205,14 +204,6 @@ public class ClassificationService {
 
 							if (timeout || classification.getStatus() != newStatus) {
 								// Status change to process
-
-								// Stop polling if no longer needed
-								if (newStatus != ClassificationStatus.SCHEDULED && newStatus != ClassificationStatus.RUNNING) {
-									synchronized (classificationsInProgress) {
-										classificationsInProgress.remove(classification);
-									}
-								}
-
 								if (newStatus == ClassificationStatus.FAILED) {
 									classification.setErrorMessage(statusResponse.getErrorMessage());
 									logger.warn("Remote classification failed with message:{}, developerMessage:{}",
@@ -220,6 +211,15 @@ public class ClassificationService {
 								} else if (timeout) {
 									newStatus = ClassificationStatus.FAILED;
 									classification.setErrorMessage("Remote service taking too long.");
+									statusResponse.setStatus(newStatus);
+									statusResponse.setErrorMessage(classification.getErrorMessage());
+								}
+
+								// Stop polling if no longer needed after timeout or processed
+								if (newStatus != ClassificationStatus.SCHEDULED && newStatus != ClassificationStatus.RUNNING) {
+									synchronized (classificationsInProgress) {
+										classificationsInProgress.remove(classification);
+									}
 								}
 
 								final ClassificationStatus newStatusFinal = newStatus;
@@ -264,7 +264,11 @@ public class ClassificationService {
 
 									classificationRepository.save(classification);
 									jmsTemplate.convertAndSend(jmsQueuePrefix + ".authoring.classification.status", statusResponse);
-									logger.info("Classification {} {} after {} seconds.", classification.getId(), classification.getStatus(), getSecondsSince(classification.getCreationDate()));
+									if (timeout) {
+										logger.warn("Classification {} aborted after {} minutes.", classification.getId(), abortRemoteClassificationAfterMinutes);
+									} else {
+										logger.info("Classification {} {} after {} seconds.", classification.getId(), classification.getStatus(), getSecondsSince(classification.getCreationDate()));
+									}
 								});
 							}
 							if (shutdownRequested) {
@@ -414,7 +418,7 @@ public class ClassificationService {
 							if (changesBatch.isEmpty()) {
 								break;
 							}
-
+							logger.info("Processing relationship changes in batch of {} for classification {}", changesBatch.size(), classification.getId());
 							// Group changes by concept
 							Map<Long, List<RelationshipChange>> conceptToChangeMap = new Long2ObjectOpenHashMap<>();
 							for (RelationshipChange relationshipChange : changesBatch) {
@@ -730,7 +734,7 @@ public class ClassificationService {
 		}
 
 		if (!relationshipChanges.isEmpty()) {
-			logger.info("Saving {} classification relationship changes total.", numberFormat.format(relationshipChanges.size()));
+			logger.info("Saving {} classification relationship changes...", numberFormat.format(relationshipChanges.size()));
 			int chunkSize = 10_000;
 			List<List<RelationshipChange>> partition = Lists.partition(relationshipChanges, chunkSize);
 			for (List<RelationshipChange> changes : partition) {

@@ -47,7 +47,6 @@ import org.springframework.web.bind.annotation.GetMapping;
 import java.util.Collections;
 import java.util.List;
 
-import static org.springframework.security.config.Customizer.withDefaults;
 import static org.springframework.security.web.util.matcher.AntPathRequestMatcher.antMatcher;
 
 @Configuration
@@ -171,43 +170,72 @@ public class SecurityAndUriConfig {
 	public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
 		http.csrf(AbstractHttpConfigurer::disable);// lgtm [java/spring-disabled-csrf-protection]
 
-		if (restApiReadOnly) {
-			// Read-ony mode
-			// Allow some explicitly defined endpoints
-			for (String prefix : alwaysAllowReadOnlyPostEndpointPrefixes()) {
-				http.authorizeHttpRequests(auth -> auth.requestMatchers(antMatcher(HttpMethod.POST, prefix + "/**")).permitAll());
-			}
+		// Add authentication filters if roles enabled
+		if (rolesEnabled) {
+			http.addFilterBefore(new RequestHeaderAuthenticationDecorator(), AuthorizationFilter.class);
+			http.addFilterAt(new RequiredRoleFilter(requiredRole, excludedUrlPatterns), AuthorizationFilter.class);
+		}
 
-			for (String path : alwaysAllowReadOnlyPostEndpoints()) {
-				http.authorizeHttpRequests(auth -> auth.requestMatchers(antMatcher(HttpMethod.POST, path)).permitAll());
-			}
-
-			if (restApiAllowReadOnlyPostEndpoints) {
-				for (String endpoint : whenEnabledAllowReadOnlyPostEndpoints()) {
-					http.authorizeHttpRequests(auth -> auth.requestMatchers(antMatcher(HttpMethod.POST, endpoint.replace("{branch}", "**"))).permitAll());
+		// Configure authorization rules
+		http.authorizeHttpRequests(auth -> {
+			// Excluded patterns (swagger, version) - no auth required
+			if (rolesEnabled) {
+				for (String pattern : excludedUrlPatterns) {
+					auth.requestMatchers(new AntPathRequestMatcher(pattern)).permitAll();
 				}
 			}
 
-			// Block all other POST/PUT/PATCH/DELETE
-			http.authorizeHttpRequests(auth -> auth
-					.requestMatchers(antMatcher(HttpMethod.POST, "/**")).denyAll()
-					.requestMatchers(antMatcher(HttpMethod.PUT, "/**")).denyAll()
-					.requestMatchers(antMatcher(HttpMethod.PATCH, "/**")).denyAll()
-					.requestMatchers(antMatcher(HttpMethod.DELETE, "/**")).denyAll()
-					.anyRequest().permitAll());
-		} else if (rolesEnabled) {
-			http.addFilterBefore(new RequestHeaderAuthenticationDecorator(), AuthorizationFilter.class);
-			http.addFilterAt(new RequiredRoleFilter(requiredRole, excludedUrlPatterns), AuthorizationFilter.class);
-
-			for (String pattern : excludedUrlPatterns) {
-				http.authorizeHttpRequests(auth -> auth.requestMatchers(new AntPathRequestMatcher(pattern)).permitAll());
+			// Read-only mode: configure allowed POST endpoints and block writes
+			if (restApiReadOnly) {
+				configureAllowedPostEndpoints(auth, rolesEnabled);
+				auth.requestMatchers(antMatcher(HttpMethod.POST, "/**")).denyAll()
+						.requestMatchers(antMatcher(HttpMethod.PUT, "/**")).denyAll()
+						.requestMatchers(antMatcher(HttpMethod.PATCH, "/**")).denyAll()
+						.requestMatchers(antMatcher(HttpMethod.DELETE, "/**")).denyAll();
 			}
-			http.authorizeHttpRequests(auth -> auth
-					.anyRequest().authenticated())
-					.exceptionHandling(ah -> ah.accessDeniedHandler(new AccessDeniedExceptionHandler()))
-					.httpBasic(withDefaults());
+
+			// Final rule for remaining requests (must always set at least one matcher)
+			if (rolesEnabled) {
+				auth.anyRequest().authenticated();
+			} else {
+				// When roles are not enabled, permit remaining requests
+				auth.anyRequest().permitAll();
+			}
+		});
+
+		// Exception handling for roles
+		if (rolesEnabled) {
+			http.exceptionHandling(ah -> ah.accessDeniedHandler(new AccessDeniedExceptionHandler()));
 		}
+
 		return http.build();
+	}
+
+	private void configureAllowedPostEndpoints(
+			org.springframework.security.config.annotation.web.configurers.AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizationManagerRequestMatcherRegistry auth,
+			boolean requireAuth) {
+		// Configure FHIR and utility POST endpoints - require auth if roles enabled, otherwise permit
+		for (String prefix : alwaysAllowReadOnlyPostEndpointPrefixes()) {
+			applyAuthRule(auth.requestMatchers(antMatcher(HttpMethod.POST, prefix + "/**")), requireAuth);
+		}
+		for (String path : alwaysAllowReadOnlyPostEndpoints()) {
+			applyAuthRule(auth.requestMatchers(antMatcher(HttpMethod.POST, path)), requireAuth);
+		}
+		if (restApiAllowReadOnlyPostEndpoints) {
+			for (String endpoint : whenEnabledAllowReadOnlyPostEndpoints()) {
+				applyAuthRule(auth.requestMatchers(antMatcher(HttpMethod.POST, endpoint.replace("{branch}", "**"))), requireAuth);
+			}
+		}
+	}
+
+	private void applyAuthRule(
+			org.springframework.security.config.annotation.web.configurers.AuthorizeHttpRequestsConfigurer<HttpSecurity>.AuthorizedUrl authorizedUrl,
+			boolean requireAuth) {
+		if (requireAuth) {
+			authorizedUrl.authenticated();
+		} else {
+			authorizedUrl.permitAll();
+		}
 	}
 
 	@Bean

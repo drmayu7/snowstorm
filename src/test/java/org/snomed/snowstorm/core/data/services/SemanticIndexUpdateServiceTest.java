@@ -1,9 +1,10 @@
 package org.snomed.snowstorm.core.data.services;
 
-import co.elastic.clients.json.JsonData;
+import co.elastic.clients.elasticsearch._types.query_dsl.RangeQuery;
 import com.google.common.collect.Lists;
 import io.kaicode.elasticvc.api.BranchService;
 import io.kaicode.elasticvc.api.CommitListener;
+import io.kaicode.elasticvc.api.VersionControlHelper;
 import io.kaicode.elasticvc.domain.Commit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -62,7 +63,7 @@ class SemanticIndexUpdateServiceTest extends AbstractTest {
 	private ConceptUpdateHelper conceptUpdateHelper;
 
 	@Autowired
-	private ElasticsearchOperations elasticsearchTemplate;
+	private ElasticsearchOperations elasticsearchOperations;
 
 	@Autowired
 	private ReferenceSetMemberService referenceSetMemberService;
@@ -73,15 +74,12 @@ class SemanticIndexUpdateServiceTest extends AbstractTest {
 	@Autowired
 	private CodeSystemService codeSystemService;
 
-	@Autowired
-	private ElasticsearchOperations elasticsearchOperations;
-
 	private static final PageRequest PAGE_REQUEST = PageRequest.of(0, 50);
 
 	@Test
 	void testCommitListenerOrderingConfig() {
 		List<CommitListener> commitListeners = branchService.getCommitListeners();
-		assertEquals(13, commitListeners.size());
+		assertEquals(16, commitListeners.size());
 		assertEquals(MRCMLoader.class, commitListeners.get(0).getClass());
 		assertEquals(ConceptDefinitionStatusUpdateService.class, commitListeners.get(1).getClass());
 		assertEquals(SemanticIndexUpdateService.class, commitListeners.get(2).getClass());
@@ -89,9 +87,11 @@ class SemanticIndexUpdateServiceTest extends AbstractTest {
 		assertEquals(BranchClassificationStatusService.class, commitListeners.get(4).getClass());
 		assertEquals(RefsetDescriptorUpdaterService.class, commitListeners.get(5).getClass());
 		assertEquals(IntegrityService.class, commitListeners.get(6).getClass());
-		assertEquals(MultiSearchService.class, commitListeners.get(7).getClass());
-		assertEquals(ECLPreprocessingService.class, commitListeners.get(8).getClass());
-		assertEquals(TraceabilityLogService.class, commitListeners.get(10).getClass());
+		assertEquals(ReferencedConceptsLookupUpdateService.class, commitListeners.get(7).getClass());
+		assertEquals(MultiSearchService.class, commitListeners.get(8).getClass());
+		assertEquals(ECLPreprocessingService.class, commitListeners.get(9).getClass());
+		assertEquals(AdditionalDependencyUpdateService.class, commitListeners.get(11).getClass());
+		assertEquals(TraceabilityLogService.class, commitListeners.get(12).getClass());
 	}
 
 	@Test
@@ -250,7 +250,7 @@ class SemanticIndexUpdateServiceTest extends AbstractTest {
 
 		// Extreme hack, without version control, to break the semantic index
 		// Remove attributes from existing semantic entry
-		final SearchHit<QueryConcept> hit = elasticsearchTemplate.searchOne(new NativeQueryBuilder()
+		final SearchHit<QueryConcept> hit = elasticsearchOperations.searchOne(new NativeQueryBuilder()
 				.withQuery(bool(b -> b
 						.must(termQuery(QueryConcept.Fields.CONCEPT_ID_FORM, hamPizza.getId() + "_i"))
 						.mustNot(existsQuery("end")))
@@ -376,7 +376,7 @@ class SemanticIndexUpdateServiceTest extends AbstractTest {
 
 		Set<Relationship> relationships = n14.getRelationships();
 		assertEquals(2, relationships.size());
-		List<Relationship> list = relationships.stream().filter(r -> r.getDestinationId().equals("1000013")).collect(Collectors.toList());
+		List<Relationship> list = relationships.stream().filter(r -> r.getDestinationId().equals("1000013")).toList();
 		relationships.removeAll(list);
 		assertEquals(1, relationships.size());
 		n14 = conceptService.update(n14, branch);
@@ -600,7 +600,7 @@ class SemanticIndexUpdateServiceTest extends AbstractTest {
 		conceptService.update(cC, "MAIN/A");
 
 		Page<ConceptMini> concepts = queryService.eclSearch(">! " + cB.getId(), false, "MAIN/A", PageRequest.of(0, 10));
-		assertEquals("[" + cC.getId() + ", 1001000]", concepts.getContent().stream().map(ConceptMini::getConceptId).collect(Collectors.toList()).toString());
+		assertEquals("[" + cC.getId() + ", 1001000]", concepts.getContent().stream().map(ConceptMini::getConceptId).toList().toString());
 	}
 
 	@Test
@@ -777,7 +777,7 @@ class SemanticIndexUpdateServiceTest extends AbstractTest {
 	}
 
 	@Test
-	void testRebuildSemanticIndexWithSameTripleActiveAndInactiveOnSameDate() throws ServiceException, InterruptedException {
+	void testRebuildSemanticIndexWithSameTripleActiveAndInactiveOnSameDate() throws ServiceException {
 		String path = "MAIN";
 		List<Concept> concepts = new ArrayList<>();
 
@@ -810,13 +810,13 @@ class SemanticIndexUpdateServiceTest extends AbstractTest {
 
 		// Delete all documents in semantic index and rebuild
 
-		List<QueryConcept> queryConcepts = elasticsearchTemplate.search(new NativeQueryBuilder().build(), QueryConcept.class)
+		List<QueryConcept> queryConcepts = elasticsearchOperations.search(new NativeQueryBuilder().build(), QueryConcept.class)
 				.stream().map(SearchHit::getContent).collect(Collectors.toList());
 		assertEquals(5, queryConcepts.size());
 
 		deleteAllQueryConceptsAndRefresh();
 
-		queryConcepts = elasticsearchTemplate.search(new NativeQueryBuilder().build(), QueryConcept.class)
+		queryConcepts = elasticsearchOperations.search(new NativeQueryBuilder().build(), QueryConcept.class)
 				.stream().map(SearchHit::getContent).collect(Collectors.toList());
 		assertEquals(0, queryConcepts.size());
 
@@ -1310,7 +1310,7 @@ class SemanticIndexUpdateServiceTest extends AbstractTest {
 		// Assert
 		// No unnecessary semantic index changes are made.
 		SearchHits<QueryConcept> semanticChanges = elasticsearchOperations.search(new NativeQueryBuilder()
-				.withQuery(range().field("start").gte(JsonData.of(now.getTime())).build()._toQuery())
+				.withQuery(RangeQuery.of(r -> r.date(d -> d.field("start").gte(String.valueOf(now.getTime()))))._toQuery())
 				.build(), QueryConcept.class);
 		assertEquals(0, semanticChanges.getTotalHits());
 
@@ -1324,15 +1324,114 @@ class SemanticIndexUpdateServiceTest extends AbstractTest {
 
 		// When
 		// Version content
-		now = new Date();
+		Date now2 = new Date();
 		codeSystemService.createVersion(codeSystemService.find(CodeSystemService.SNOMEDCT), 20210201, "");
 
 		// Assert
 		// No unnecessary semantic index changes are made.
 		semanticChanges = elasticsearchOperations.search(new NativeQueryBuilder()
-				.withQuery(range().field("start").gte(JsonData.of(now.getTime())).build()._toQuery())
+				.withQuery(RangeQuery.of(r -> r.date(d -> d.field("start").gte(String.valueOf(now2.getTime()))))._toQuery())
 				.build(), QueryConcept.class);
 		assertEquals(0, semanticChanges.getTotalHits());
+	}
+
+
+	@Test
+	void testCompleteRebuildWithSeparateSemanticIndex() throws ServiceException {
+		// Add concepts to MAIN
+		String path = "MAIN";
+		List<Concept> concepts = new ArrayList<>();
+
+		concepts.add(new Concept(SNOMEDCT_ROOT));
+		concepts.add(new Concept("116680003")
+				.addRelationship(new Relationship(ISA, SNOMEDCT_ROOT))
+		);
+		concepts.add(new Concept("39607008")
+				.addRelationship(new Relationship(ISA, SNOMEDCT_ROOT))
+		);
+		concepts.add(new Concept("363698007")
+				.addRelationship(new Relationship(ISA, SNOMEDCT_ROOT))
+		);
+
+		conceptService.batchCreate(concepts, path);
+		concepts.clear();
+
+		concepts.add(new Concept("34020007")
+				.addRelationship(new Relationship(UUID.randomUUID().toString(), ISA, SNOMEDCT_ROOT))
+				.addRelationship(new Relationship("3332956025", 20150731, false, "900000000000207008", "34020007", "39607008", 1, "363698007", "900000000000011006", "900000000000451002"))
+				.addRelationship(new Relationship("5963641025", 20150731, true, "900000000000207008", "34020007", "39607008", 1, "363698007", "900000000000011006", "900000000000451002"))
+		);
+
+		// Use low level component save to prevent effectiveTimes being stripped by concept service
+		simulateRF2Import(path, concepts);
+		assertEquals(4, queryService.search(queryService.createQueryBuilder(false).ecl("<" + SNOMEDCT_ROOT), path, PAGE_REQUEST).getTotalElements());
+		Page<QueryConcept> queryConcepts = queryConceptRepository.findAll(PageRequest.of(0,10));
+		assertEquals(5, queryConcepts.getTotalElements());
+
+		// Create a new branch and configure it to exclude the semantic index from MAIN
+		String project = "MAIN/TEST";
+		branchService.create(project);
+		Map<String, Object> metadata = new HashMap<>();
+		metadata.put(VersionControlHelper.PARENT_BRANCHES_EXCLUDED_ENTITY_CLASS_NAMES, List.of(QueryConcept.class.getSimpleName()));
+		branchService.updateMetadata(project, metadata);
+
+		// Complete rebuild of the semantic index on the new branch
+		updateService.rebuildStatedAndInferredSemanticIndex(project, false);
+
+		// Assert that the semantic index created on the new branch
+		assertEquals(4, queryService.search(queryService.createQueryBuilder(false).ecl("<" + SNOMEDCT_ROOT), project, PAGE_REQUEST).getTotalElements());
+		queryConcepts = queryConceptRepository.findAll(PageRequest.of(0,10));
+		// Check additional query concepts are created
+		assertEquals(10, queryConcepts.getTotalElements());
+
+		// Assert 0 version replaced for QueryConcept in branch metadata
+		assertEquals(0, branchService.findBranchOrThrow(project).getVersionsReplaced().get(QueryConcept.class.getSimpleName()).size());
+	}
+
+
+	@Test
+	void testSemanticIndexUpdateWhenAllNonIsaAttributesRemoved() throws ServiceException {
+		// Add a concept in MAIN with non-ISA attributes
+		String path = "MAIN";
+		List<Concept> concepts = new ArrayList<>();
+
+		concepts.add(new Concept(SNOMEDCT_ROOT));
+		concepts.add(new Concept("116680003")
+				.addRelationship(new Relationship(ISA, SNOMEDCT_ROOT))
+		);
+		concepts.add(new Concept("39607008")
+				.addRelationship(new Relationship(ISA, SNOMEDCT_ROOT))
+		);
+		concepts.add(new Concept("363698007")
+				.addRelationship(new Relationship(ISA, SNOMEDCT_ROOT))
+		);
+
+		conceptService.batchCreate(concepts, path);
+		concepts.clear();
+
+		concepts.add(new Concept("34020007")
+				.addRelationship(new Relationship(UUID.randomUUID().toString(), ISA, SNOMEDCT_ROOT))
+				.addRelationship(new Relationship("3332956025", 20200731, true, "900000000000207008", "34020007", "39607008", 1, "363698007", "900000000000011006", "900000000000451002"))
+		);
+
+		// Use low level component save to prevent effectiveTimes being stripped by concept service
+		simulateRF2Import(path, concepts);
+		assertEquals(1, queryService.search(queryService.createQueryBuilder(false).ecl("*:363698007=*"), path, PAGE_REQUEST).getTotalElements());
+
+		// Remove non-ISA attributes from the concept
+		Concept concept = conceptService.find("34020007", path);
+		concept.getRelationships().forEach(relationship -> {
+			if (!relationship.getTypeId().equals(ISA)) {
+				relationship.setActive(false);
+			}});
+
+		conceptService.update(concept, path);
+
+		conceptService.find("34020007", path).getRelationships().stream().filter(relationship -> !relationship.getTypeId().equals("116680003")).forEach(relationship ->
+				assertFalse(relationship.isActive())
+		);
+		// Assert that the semantic index is updated and non-isa atrributes are removed
+		assertEquals(0, queryService.search(queryService.createQueryBuilder(false).ecl("*:363698007=*"), path, PAGE_REQUEST).getTotalElements());
 	}
 
 	private void simulateRF2Import(String path, List<Concept> concepts) {

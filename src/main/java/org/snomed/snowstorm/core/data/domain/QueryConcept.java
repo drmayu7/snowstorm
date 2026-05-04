@@ -31,6 +31,7 @@ public class QueryConcept extends DomainEntity<QueryConcept> implements FHIRGrap
 		String ATTR = "attr";
 		String ATTR_MAP = "attrMap";
 		String START = "start";
+		String REFSETS = "refsets";
 	}
 
 	@Field(type = FieldType.Keyword)
@@ -56,6 +57,9 @@ public class QueryConcept extends DomainEntity<QueryConcept> implements FHIRGrap
 	// Format:
 	// groupNo:attr=value:attr=value,value|groupNo:attr=value:attr=value,value
 	private String attrMap;
+
+	@Field(type = FieldType.Long)
+	private Set<Long> refsets;
 
 	@Transient
 	private Map<Integer, Map<String, List<Object>>> groupedAttributesMap;
@@ -83,12 +87,15 @@ public class QueryConcept extends DomainEntity<QueryConcept> implements FHIRGrap
 		stated = queryConcept.stated;
 		attrMap = queryConcept.attrMap;
 		serializeGroupedAttributesMap();// Populates attr field
+		refsets = queryConcept.refsets;
 	}
 
 	public void clearAttributes() {
 		if (groupedAttributesMap != null) {
 			groupedAttributesMap.clear();
 		}
+		attrMap = null;
+		attr = null;
 	}
 
 	public void addAttribute(int group, Long type, Object value) {
@@ -109,7 +116,7 @@ public class QueryConcept extends DomainEntity<QueryConcept> implements FHIRGrap
 
 			List<Object> typeValues = groupAttributes.get(type.toString());
 			if (typeValues != null) {
-				typeValues.remove(value.toString());
+				typeValues.remove(value);
 				if (typeValues.isEmpty()) {
 					groupAttributes.remove(type.toString());
 				}
@@ -235,7 +242,8 @@ public class QueryConcept extends DomainEntity<QueryConcept> implements FHIRGrap
 	public boolean fieldsMatch(QueryConcept other) {
 		if (!this.equals(other)
 				|| !this.getParents().equals(other.getParents())
-				|| !this.getAncestors().equals(other.getAncestors())) {
+				|| !this.getAncestors().equals(other.getAncestors())
+				|| !Objects.equals(this.getRefsets(), other.getRefsets())) {
 			return false;
 		}
 		final Map<Integer, Map<String, List<Object>>> groupedAttributesMap = orEmpty(this.getGroupedAttributesMap());
@@ -256,6 +264,14 @@ public class QueryConcept extends DomainEntity<QueryConcept> implements FHIRGrap
 
 	public boolean isCreating() {
 		return creating;
+	}
+
+	public Set<Long> getRefsets() {
+		return refsets;
+	}
+
+	public void setRefsets(Set<Long> refsets) {
+		this.refsets = refsets;
 	}
 
 	@Override
@@ -337,12 +353,16 @@ public class QueryConcept extends DomainEntity<QueryConcept> implements FHIRGrap
 			}
 			String[] groups = attrMap.split("\\|");
 			for (String group : groups) {
-				String[] attributes = group.split(":");
+				// To exclude : in concrete string value
+				String[] attributes = group.split(":(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)");
 				int groupNo = Integer.parseInt(attributes[0]);
 				Map<String, List<Object>> attributeMap = new HashMap<>();
 				for (int i = 1; i < attributes.length; i++) {
 					String attribute = attributes[i];
 					String[] attrParts = attribute.split("=");
+					if (attrParts.length != 2) {
+						throw new IllegalArgumentException(String.format("Invalid attribute format %s found in attrMap %s", attribute, attrMap));
+					}
 					String type = attrParts[0];
 					String[] values = attrParts[1].split(",");
 					List<Object> transformed = checkAndTransformConcreteValues(Arrays.asList(values));

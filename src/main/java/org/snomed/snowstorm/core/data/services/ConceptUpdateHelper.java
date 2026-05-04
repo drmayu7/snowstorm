@@ -6,6 +6,7 @@ import com.google.common.collect.Sets;
 import io.kaicode.elasticvc.api.BranchService;
 import io.kaicode.elasticvc.api.ComponentService;
 import io.kaicode.elasticvc.api.VersionControlHelper;
+import io.kaicode.elasticvc.domain.Branch;
 import io.kaicode.elasticvc.domain.Commit;
 import io.kaicode.elasticvc.domain.DomainEntity;
 import io.kaicode.elasticvc.domain.Metadata;
@@ -41,10 +42,31 @@ import java.util.stream.Collectors;
 import static co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders.bool;
 import static io.kaicode.elasticvc.helper.QueryHelper.termsQuery;
 import static org.snomed.snowstorm.core.data.domain.Concepts.CONCEPT_NON_CURRENT;
-import static org.snomed.snowstorm.core.data.domain.Concepts.inactivationIndicatorNames;
 
 @Service
 public class ConceptUpdateHelper extends ComponentService {
+	private static final Comparator<ReferenceSetMember> CORE_MODULE_ACTIVE_COMPARATOR = (o1, o2) -> {
+		boolean o1Core = o1.getModuleId().equals(Concepts.CORE_MODULE);
+		boolean o2Core = o2.getModuleId().equals(Concepts.CORE_MODULE);
+		boolean o1Active = o1.isActive();
+		boolean o2Active = o2.isActive();
+
+		if (o1Core && o1Active && !(o2Core && o2Active)) {
+			return -1;
+		} else if (!(o1Core && o1Active) && o2Core && o2Active) {
+			return 1;
+		} else if (o1Core && !o2Core) {
+			return -1;
+		} else if (!o1Core && o2Core) {
+			return 1;
+		} else if (o1Active && !o2Active) {
+			return -1;
+		} else if (!o1Active && o2Active) {
+			return 1;
+		} else {
+			return 0;
+		}
+	};
 
 	@Autowired
 	private ConceptRepository conceptRepository;
@@ -78,7 +100,7 @@ public class ConceptUpdateHelper extends ComponentService {
 	private VersionControlHelper versionControlHelper;
 
 	@Autowired
-	private ElasticsearchOperations elasticsearchTemplate;
+	private ElasticsearchOperations elasticsearchOperations;
 
 	@Autowired
 	private IdentifierService identifierService;
@@ -113,8 +135,10 @@ public class ConceptUpdateHelper extends ComponentService {
 		validateConcepts(newVersionConcepts);
 
 		// Grab branch metadata including values inherited from ancestor branches
-		Metadata metadata = branchService.findBranchOrThrow(commit.getBranch().getPath(), true).getMetadata();
+		Branch branch = branchService.findBranchOrThrow(commit.getBranch().getPath(), true);
+		Metadata metadata = branch.getMetadata();
 		String defaultModuleId = metadata.getString(Config.DEFAULT_MODULE_ID_KEY);
+		List<String> expectedExtensionModules = metadata.getList(Config.EXPECTED_EXTENSION_MODULES);
 		String defaultNamespace = metadata.getString(Config.DEFAULT_NAMESPACE_KEY);
 		final boolean contentAutomationsDisabled = BranchMetadataHelper.isContentAutomationsDisabledForCommit(commit);
 		TimerUtil timerUtil = new TimerUtil("identifierService.reserveIdentifierBlock", Level.INFO, 1);
@@ -162,13 +186,13 @@ public class ConceptUpdateHelper extends ComponentService {
 					newVersionConcept.getAllOwlAxiomMembers().forEach(axiom -> axiom.setActive(false));
 					newVersionConcept.getDescriptions().forEach(description -> {
 						if (StringUtils.isEmpty(description.getInactivationIndicator())) {
-							description.setInactivationIndicator(inactivationIndicatorNames.get(Concepts.CONCEPT_NON_CURRENT));
+							description.setInactivationIndicator(InactivationIndicatorUtil.getInactivationIndicator(branch, Concepts.CONCEPT_NON_CURRENT));
 						}
 					});
 				}
 
 				// Create or update concept inactivation indicator refset members based on the json inactivation map
-				updateInactivationIndicator(newVersionConcept, existingConcept, existingConceptFromParent, refsetMembersToPersist, Concepts.CONCEPT_INACTIVATION_INDICATOR_REFERENCE_SET, defaultModuleId);
+				updateInactivationIndicator(newVersionConcept, existingConcept, existingConceptFromParent, refsetMembersToPersist, Concepts.CONCEPT_INACTIVATION_INDICATOR_REFERENCE_SET, defaultModuleId, branch);
 
 				// Create or update concept historical association refset members based on the json inactivation map
 				updateAssociations(newVersionConcept, existingConcept, existingConceptFromParent, refsetMembersToPersist, defaultModuleId);
@@ -189,6 +213,7 @@ public class ConceptUpdateHelper extends ComponentService {
 
 			for (Description description : newVersionConcept.getDescriptions()) {
 				description.setConceptId(newVersionConcept.getConceptId());
+				description.setLanguageCode(description.getLanguageCode().toLowerCase());
 				if (description.getDescriptionId() == null) {
 					description.setDescriptionId(reservedIds.getNextId(ComponentType.Description).toString());
 				}
@@ -203,7 +228,7 @@ public class ConceptUpdateHelper extends ComponentService {
 
 				// Description inactivation indicator changes
 				updateInactivationIndicator(description, existingDescription, existingDescriptionFromParent, refsetMembersToPersist,
-						Concepts.DESCRIPTION_INACTIVATION_INDICATOR_REFERENCE_SET, defaultModuleId);
+						Concepts.DESCRIPTION_INACTIVATION_INDICATOR_REFERENCE_SET, defaultModuleId, branch);
 
 				// Description association changes
 				updateAssociations(description, existingDescription, existingDescriptionFromParent, refsetMembersToPersist, defaultModuleId);
@@ -218,7 +243,12 @@ public class ConceptUpdateHelper extends ComponentService {
 						throw new IllegalArgumentException("Acceptability value not recognised '" + acceptability.getValue() + "'.");
 					}
 
-					final Set<ReferenceSetMember> existingMembers = existingMembersToMatch.get(languageRefsetId);
+					Set<ReferenceSetMember> existingMembers = new TreeSet<>(CORE_MODULE_ACTIVE_COMPARATOR);
+					Set<ReferenceSetMember> existingMembersToMatchByLanguageRefset = existingMembersToMatch.get(languageRefsetId);
+					if (existingMembersToMatchByLanguageRefset != null && !existingMembersToMatchByLanguageRefset.isEmpty()) {
+						existingMembers.addAll(existingMembersToMatchByLanguageRefset);
+					}
+
 					ReferenceSetMember existingMember = existingMembers != null && !existingMembers.isEmpty() ? existingMembers.iterator().next() : null;
 					ReferenceSetMember member;
 					if (existingMember != null) {
@@ -261,7 +291,7 @@ public class ConceptUpdateHelper extends ComponentService {
 
 			// Descriptions
 			markDeletionsAndUpdates(newVersionConcept, existingConcept, existingConceptFromParent, Concept::getDescriptions,
-					defaultModuleId, descriptionsToPersist, rebaseConflictSave);
+					defaultModuleId, expectedExtensionModules, descriptionsToPersist, rebaseConflictSave);
 
 			// Todo: un-comment out this line when allowing the alternative identifier modification
 			// Alternative Identifiers
@@ -270,15 +300,15 @@ public class ConceptUpdateHelper extends ComponentService {
 
 			// Relationships
 			markDeletionsAndUpdates(newVersionConcept, existingConcept, existingConceptFromParent, Concept::getRelationships,
-					defaultModuleId, relationshipsToPersist, rebaseConflictSave);
+					defaultModuleId, expectedExtensionModules, relationshipsToPersist, rebaseConflictSave);
 
 			// Axiom refset members
 			markDeletionsAndUpdates(newVersionConcept, existingConcept, existingConceptFromParent, Concept::getAllOwlAxiomMembers,
-					defaultModuleId, refsetMembersToPersist, rebaseConflictSave);
+					defaultModuleId, expectedExtensionModules, refsetMembersToPersist, rebaseConflictSave);
 			
 			// Annotation refset members
 			markDeletionsAndUpdates(newVersionConcept, existingConcept, existingConceptFromParent, Concept::getAllAnnotationMembers,
-					defaultModuleId, refsetMembersToPersist, rebaseConflictSave);
+					defaultModuleId, expectedExtensionModules, refsetMembersToPersist, rebaseConflictSave);
 
 
 			for (Description description : newVersionConcept.getDescriptions()) {
@@ -287,7 +317,7 @@ public class ConceptUpdateHelper extends ComponentService {
 
 				// Description language refset members
 				markDeletionsAndUpdates(description, existingDescription, existingDescriptionFromParent, Description::getLangRefsetMembers,
-						defaultModuleId, refsetMembersToPersist, rebaseConflictSave);
+						defaultModuleId, expectedExtensionModules, refsetMembersToPersist, rebaseConflictSave);
 			}
 
 			// Detach concept's components to ensure concept persisted without collections
@@ -385,7 +415,8 @@ public class ConceptUpdateHelper extends ComponentService {
 			SnomedComponentWithInactivationIndicator existingConceptFromParent,
 			Collection<ReferenceSetMember> refsetMembersToPersist,
 			String indicatorReferenceSet,
-			String defaultModuleId) {
+			String defaultModuleId,
+		 	Branch branch) {
 
 		if (newComponent instanceof Description newDescription) {
 			if (newDescription.isActive()) {
@@ -398,8 +429,8 @@ public class ConceptUpdateHelper extends ComponentService {
 		}
 
 		String newIndicatorName = newComponent.getInactivationIndicator();
-		final String newIndicatorId = newIndicatorName != null ? inactivationIndicatorNames.inverse().get(newIndicatorName) : null;
-		if (newIndicatorName != null && newIndicatorId == null) {
+		final String newIndicatorId = newIndicatorName != null ? InactivationIndicatorUtil.getInactivationIndicatorInverse(branch, newIndicatorName) : null;
+		if (isInactivationIndicatorNotRecognised(newIndicatorName, branch)) {
 			throw new IllegalArgumentException(newComponent.getClass().getSimpleName() + " inactivation indicator not recognised '" + newIndicatorName + "'.");
 		}
 		Map<String, Set<String>> membersRequired = new HashMap<>();
@@ -646,7 +677,7 @@ public class ConceptUpdateHelper extends ComponentService {
 				).withPageable(LARGE_PAGE).build();
 
 		List<ReferenceSetMember> membersToDelete = new ArrayList<>();
-		try (SearchHitsIterator<ReferenceSetMember> stream = elasticsearchTemplate.searchForStream(query, ReferenceSetMember.class)) {
+		try (SearchHitsIterator<ReferenceSetMember> stream = elasticsearchOperations.searchForStream(query, ReferenceSetMember.class)) {
 			stream.forEachRemaining(hit -> {
 				ReferenceSetMember member = hit.getContent();
 				member.markDeleted();
@@ -662,7 +693,7 @@ public class ConceptUpdateHelper extends ComponentService {
 
 	@SuppressWarnings("unchecked")
 	private <C extends SnomedComponent, T extends SnomedComponent<?>> void markDeletionsAndUpdates(T newConcept, T existingConcept, T existingConceptFromParent,
-																								   Function<T, Collection<C>> getter, String defaultModuleId, Collection<C> componentsToPersist, boolean rebase) {
+																								   Function<T, Collection<C>> getter, String defaultModuleId, List<String> expectedExtensionModules, Collection<C> componentsToPersist, boolean rebase) {
 
 		final Collection<C> newComponents = getExistingComponents(newConcept, getter);
 		final Collection<C> existingComponents = getExistingComponents(existingConcept, getter);
@@ -670,6 +701,9 @@ public class ConceptUpdateHelper extends ComponentService {
 
 		final Map<String, C> existingComponentMap = existingComponents.stream().collect(Collectors.toMap(DomainEntity::getId, Function.identity()));
 		final Map<String, C> rebaseParentExistingComponentMap = existingComponentsFromParent.stream().collect(Collectors.toMap(DomainEntity::getId, Function.identity()));
+
+		final boolean hasDefaultModuleId = defaultModuleId != null;
+		final boolean hasOtherModules = expectedExtensionModules != null && !expectedExtensionModules.isEmpty();
 
 		// Mark updates
 		for (C newComponent : newComponents) {
@@ -685,8 +719,14 @@ public class ConceptUpdateHelper extends ComponentService {
 			}
 
 			// Any change to a component in an extension needs to be done in the default module
-			if (newComponent.isComponentChanged(existingComponent) && (defaultModuleId != null && !defaultModuleId.equals(Concepts.CORE_MODULE))) {
-				newComponent.setModuleId(defaultModuleId);
+			boolean newComponentHasNoModule = newComponent.getModuleId() == null;
+			boolean newComponentNotInExpectedModule = hasOtherModules && !expectedExtensionModules.contains(newComponent.getModuleId());
+			if (newComponent.isComponentChanged(existingComponent)) {
+				if (newComponentHasNoModule || (hasOtherModules && newComponentNotInExpectedModule) || !hasOtherModules) {
+					if (hasDefaultModuleId) {
+						newComponent.setModuleId(defaultModuleId);
+					}
+				}
 			}
 
 			// Update effective time
@@ -694,14 +734,15 @@ public class ConceptUpdateHelper extends ComponentService {
 
 			// Trying concept module in attempt to restore effective time
 			// for the case where content has changed and then been reverted.
-			if (defaultModuleId != null && newComponent.getEffectiveTime() == null) {
+			if (newComponent.isReleased() && defaultModuleId != null && newComponent.getEffectiveTime() == null) {
 				logger.trace("Setting module of {} to be same as concept: {}.", newComponent.getId(), newConcept.getModuleId());
+				String moduleIdCopy = newComponent.getModuleId();
 				newComponent.setModuleId(newConcept.getModuleId());
 				newComponent.updateEffectiveTime();
 				if (newComponent.getEffectiveTime() == null) {
 					// If effective time is still null then revert the change of module back to the branch default
 					logger.trace("Setting module of {} to be same as branch default: {}.", newComponent.getId(), defaultModuleId);
-					newComponent.setModuleId(defaultModuleId);
+					newComponent.setModuleId(moduleIdCopy);
 					newComponent.updateEffectiveTime();
 				}
 			}
@@ -720,8 +761,12 @@ public class ConceptUpdateHelper extends ComponentService {
 						existingComponent.setChanged(true);
 						
 						//Any change to a component in an extension needs to be done in the default module
-						if (defaultModuleId != null && !defaultModuleId.equals(Concepts.CORE_MODULE)) {
-							existingComponent.setModuleId(defaultModuleId);
+						boolean newComponentHasNoModule = existingComponent.getModuleId() == null;
+						boolean newComponentNotInExpectedModule = hasOtherModules && !expectedExtensionModules.contains(existingComponent.getModuleId());
+						if (newComponentHasNoModule || (hasOtherModules && newComponentNotInExpectedModule) || !hasOtherModules) {
+							if (hasDefaultModuleId) {
+								existingComponent.setModuleId(defaultModuleId);
+							}
 						}
 						
 						existingComponent.copyReleaseDetails(existingComponent, existingParentComponent);
@@ -763,12 +808,21 @@ public class ConceptUpdateHelper extends ComponentService {
 		}
 	}
 
-	public ElasticsearchOperations getElasticsearchTemplate() {
-		return elasticsearchTemplate;
+	public ElasticsearchOperations getElasticsearchOperations() {
+		return elasticsearchOperations;
 	}
 
 	public VersionControlHelper getVersionControlHelper() {
 		return versionControlHelper;
 	}
 
+	private boolean isInactivationIndicatorNotRecognised(String newIndicatorName, Branch branch) {
+		boolean requestedCNC = Objects.equals(newIndicatorName, "CONCEPT_NON_CURRENT") || Objects.equals(newIndicatorName, CONCEPT_NON_CURRENT);
+		if (requestedCNC) {
+			return false;
+		}
+
+		final String newIndicatorId = newIndicatorName != null ? InactivationIndicatorUtil.getInactivationIndicatorInverse(branch, newIndicatorName) : null;
+		return newIndicatorName != null && newIndicatorId == null;
+	}
 }
